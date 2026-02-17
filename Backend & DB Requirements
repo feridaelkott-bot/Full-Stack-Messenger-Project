@@ -1,0 +1,34 @@
+Cases of Messenger chat where the Database and Web server layer need to work together: 
+
+a. When user LOGS IN: 
+--> take the user's login infor, create a POST request
+--> Must search the database for user's name and credentials: ERROR IF NOT FOUND
+--> ONLY IF name is found, Web server will perform authentication (for security)
+--> authentication (will still leanr about Javalin's functionality), but could be through Twilio API, and send a code to their email account
+
+b. When user wants to REGISTER: 
+--> GUI should ask for relevant information: email, phone number, name, and store into variables
+--> Web server will create a post request
+--> web server will need to perform Authentication (sending code)
+--> Web server will take user credentials, create variables from the JSON data
+--> JDBC will store inside the database
+
+c. When user wants to CREATE a new chat
+--> backend requests new chat information (users)
+--> sends via post request through the backend server
+--> extract relevant information into variables
+--> JDBC will take these variables and insert it as a new table in the database
+
+d. When user wants access to an EXISTING chat
+--> Send a POST request to the backend
+--> the post request must contain the relevant information of the existing chat
+--> turn the JSON info into variable data
+--> variable data will be used to communicate with JDBC
+
+
+NOTE: when it comes to POST requests, the GUI (JavaFX) must monitor user clicking of specific chats
+--> depending on the chat that the user clicks, the web server will formulate the relevant post request with the relevant information
+
+
+--> Question: how will the program be able to tell based on which chat the user selects from the list, what the information of the chat is (name of group)
+
