@@ -14,7 +14,7 @@ b. When user wants to REGISTER:
 --> JDBC will store inside the database
 
 c. When user wants to CREATE a new chat
---> backend requests new chat information (users)
+--> GUI asks for new chat information (users)
 --> sends via post request through the backend server
 --> extract relevant information into variables
 --> JDBC will take these variables and insert it as a new table in the database
