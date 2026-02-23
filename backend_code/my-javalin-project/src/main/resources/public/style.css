@@ -1,0 +1,21 @@
+/* src/main/resources/public/style.css */
+#chatControls { margin: 10px; }
+#message { width: 70%; padding: 5px; }
+#send { padding: 5px 10px; }
+#chat { 
+    height: 400px; 
+    overflow-y: scroll; 
+    border: 1px solid #ccc; 
+    padding: 10px; 
+    margin: 10px 0;
+    background: #f9f9f9;
+}
+#userlist { 
+    float: right; 
+    width: 200px; 
+    height: 400px; 
+    overflow-y: scroll; 
+    border: 1px solid #ccc; 
+    padding: 10px;
+}
+.timestamp { color: #888; font-size: 0.8em; }
