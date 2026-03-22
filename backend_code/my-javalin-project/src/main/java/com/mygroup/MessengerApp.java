@@ -6,6 +6,7 @@ import java.util.Map;
 import io.javalin.websocket.WsContext;
 import java.util.concurrent.ConcurrentHashMap;
 import com.google.gson.Gson; //import the Gson library for JSON parsing --> possible only when we added the Maven dependency
+import java.util.ArrayList; 
 
 //these will be for parsing the JSON string for only the type field first
 import com.google.gson.JsonParser; 
@@ -18,15 +19,19 @@ public class MessengerApp
         //-->This will be useful for handling all of the connections from a single program. 
         //-->ConcurrentHashMap is useful since many clients can connect at once --> concurrent hash maps are thread-safe and allow multiple threads to access them at once*/
         
-        private static final Map<WsContext, String> userUsernameMap = new ConcurrentHashMap<>();
-        
-        
 
-        //login fields class (each client gets their own copy of this class)
+        private static final Map<WsContext, String> ctx_and_phones = new ConcurrentHashMap<>();
+        private static final Map<WsContext, String> userUsernameMap = new ConcurrentHashMap<>();
+        private static final ArrayList<String> allNumbers = new ArrayList<>(); //this array will never have its numbers taken out, unless the user deletes their account
+
+
+        //each client gets their own copy of each of the classes below: 
+
+        //From the main page: 
         public class LoginInfo{
 
             String type; //login
-            String username; 
+            String phone_number; 
             String password; 
 
         }
@@ -34,21 +39,43 @@ public class MessengerApp
 
         public class RegisterInfo{
             String type; //register
-            String username; 
+            String phone_number; 
             String password; 
-            String phoneNumber;
         }
 
-        //message fields class
+        //the new message button is found in teh main page screen
         public class Message{
-            String type; //message
-            String id; //message id 
-            String date; 
-            String time; 
-            String sender; 
-            String recipient; 
-            String text;
+            String type; //new message
+            int toPhone; 
+            int fromPhone; //should be automatically filled in by the backend
         }
+
+        //these are the three button implementations for each chat that the user has:
+        public class Remove{
+            String type; //remove
+            String phone_number; 
+        } 
+        public class Block{
+            String type; //block
+            String phone_number; 
+        }
+        public class Report{
+            String type;//report
+            String phone_number; 
+        }
+
+
+        //these options are available from the settings tab
+        public class Logout{
+            String type; //logout
+        }//if this is the type gotten, then simply remove ctx connection
+
+        public class DeleteAccount{
+            String type; //deleteAcc
+            String phone_number; 
+        
+        }//if this is the type, then delete the information from the database, then remove the ctx connection. 
+
 
 
     public static void main( String[] args )
@@ -58,24 +85,21 @@ public class MessengerApp
         Javalin app = Javalin.create()//create the websocket server, and its
 
             
-            //define the websocket endpoint
+            //define the websocket endpoint --> you only see this if you enter the url into the browser
             .get("/", ctx -> ctx.result("Hello World! This server is working :)")) //Creates a web browser for our server. CTX here is the HTTP request context NOT a client context. NOT required in our program, but useful for testing. 
             
+
+            //websocket connection object
             .ws("/", ws -> { 
 
+                //this on connect part is triggered by teh line buildAsync(URI...("ws://localhost:7070/")) from the GUI
                 ws.onConnect(ctx -> {
                     
 
+                    ctx_and_phones.put(ctx, ""); //empty phone for now
 
-                    //just to keep track of current users
-                    String username = "User" + ctx.sessionId(); //create a username based on the session id of the client that just connected
-                    userUsernameMap.put(ctx, username); //store the username in the map, with the user's connection ID
-                    
-                    //!GUI: program immediately connects to this server, before the user logs in/ registers
-                    //!GUI: event listener for which button is pressed: login or register.
-                    //!GUI: Make sure to add a 'type' field to each JSON, for login, register, or message
-                    //todo: when GUI sends any json, then it can ONLY be read inside onMessage
-                    //todo: --> therefore, program will jump to onMessage
+                    //*At this point, the  user is on the main page of the GUI, where they have the option to login/register*/
+                    //*when GUI sends any json, then it can ONLY be read inside onMessage
                  
 
                     
@@ -86,109 +110,98 @@ public class MessengerApp
                 
                 ws.onMessage(ctx -> {
 
-                    //*The actual JSON string would be gotten from the line ctx.message() */
+                    //*The actual JSON strings would be gotten from the line ctx.message() */
 
 
-                    //1. Read the inputted login/register JSON here: 
-                    //-->sample JSON input from user here (delete later)
-                    String sampleLogin ="{\n" +
-                        "  \"type\": \"login\",\n" +
-                        "  \"username\": \"alice123\",\n" +
-                        "  \"password\": \"secret123\",\n" +
-                        "  \"phoneNumber\": \"519-555-1234\"\n" +
-                    "}"; 
-
+                    String rawJson = ctx.message(); //get the json that is sent from the GUI
+                    //in JavaFX, there is a certain line: .buildAsync(URI.create("ws://localhost:7070/"), new WebSocket.Listener() {
+                    //this line above is part of the method in teh GUI file that is for connecting to the server. 
+                    //this is the point where GUI JSON input can be sent to the backend server here. 
+                    //so ctx.message() gets triggered by the line "webSocket.sendText(jsonOutput, true);" from teh GUI
 
 
                     //create a JSON parser to first look at the 'type' field
-                    JsonObject json = JsonParser.parseString(sampleLogin).getAsJsonObject(); //parse the JSON string into a JsonObject
+                    JsonObject json = JsonParser.parseString(rawJson).getAsJsonObject(); //parse the JSON string into a JsonObject
                     String type = json.get("type").getAsString(); //get the value of the 'type' field from the JSON object
 
-
-
-                    //2. Deconstruct the JSON to get all three fields: username, password, and phone number using GSON
+                    //get the 'type' of the json params
                     Gson gson = new Gson();
                     if (type.equals("login")){ //if the JSON is a login request
                         
-                        LoginInfo new_user = gson.fromJson(sampleLogin, LoginInfo.class); //convert the JSON string to a LoginInfo object, which has the fields: type, username, password, phone number
-                        //! DATABASE: check if the user exists in the database here, using the fields from the JSON. --> new_user.username, new_user.password, new_user.phoneNumber
-                        //! DATABASE: if the user exists, then 
-                        //! --> This is where ERROR CHECKING happens: if the user doesn't exist, we need ot send an error message back to the client, and not log them in.
+                        LoginInfo new_user = gson.fromJson(rawJson, LoginInfo.class); //convert the JSON string to a LoginInfo object, which has the fields: type, username, password, phone number
+                        
+
+                        //find out if the phone number is inside the phone numbers ArrayList
+                        if (allNumbers.contains(new_user.phone_number)){
+                            //todo: database checks if "new_user.password" exists
+                            boolean exists_in_db = true; 
+                            if (exists_in_db){
+                                //add this newly connected number to the array of ctx and phone number objects: 
+                                ctx_and_phones.put(ctx, new_user.phone_number); //if the ctx already exists, then this would overwrite it
+                            }
+
+                        }else{
+                            //if the entered phone number is not inside the allNumbers array list, then send error message to GUI
+                            //todo: JavaFX takes this information from the onText method
+                            ctx.send("The entered phone number does not exist. Click to register instead: "); 
+
+                        }
+
+                    }
+                    else if(type.equals("message")){
+                        Message new_message = gson.fromJson(rawJson, Message.class); //convert the JSON string to a Message object, which has the fields: type, username, text
 
 
-                    }else if(type.equals("message")){
-                        Message new_message = gson.fromJson(sampleLogin, Message.class); //convert the JSON string to a Message object, which has the fields: type, username, text
-                        //! DATABASE: store the message in the database here, using the fields from the JSON. --> new_message.username, new_message.text
                     }
                     else if (type.equals("register")){
-                        RegisterInfo new_register = gson.fromJson(sampleLogin, RegisterInfo.class); //convert the JSON string to a RegisterInfo object, which has the fields: type, username, password, phone number
+                        RegisterInfo new_register = gson.fromJson(rawJson, RegisterInfo.class); //convert the JSON string to a RegisterInfo object, which has the fields: type, username, password, phone number
+                        allNumbers.add(new_register.phone_number); //append the new number to the array list of phone numbers
 
+                        //todo: database needs to add teh phone, and password
+
+                    }else if (type.equals("block")){
+                        
+                        Block blocked = gson.fromJson(rawJson, Block.class); 
+                        String connection_to_remove = blocked.phone_number; 
+
+                        //todo: database removes the connection between the blocked and the user
+
+                    }else if (type.equals("report")){
+                        Report reported = gson.fromJson(rawJson, Report.class); 
+                        //todo: ?????
+                    }
+                    else if (type.equals("logout")){
+                        Logout logging_out = gson.fromJson(rawJson, Logout.class); 
+                        //get the number that is logging out, remove its ctx connection, and remove its number from the array list of numbers
+                        userUsernameMap.remove(ctx); //remove their conection fromt eh map of connections
+                        ctx.send("You are being disconnected"); //todo: GUI needs to accept this message
+                        ctx.session.close(); //todo: make sure teh GUI can detect this close and close its own window accordingly
+                    
+                    }else if(type.equals("deleteAcc")){
+                        DeleteAccount deleteAcc = gson.fromJson(rawJson, DeleteAccount.class);
+                        userUsernameMap.remove(ctx); 
+                        ctx.send("Deleting account..."); 
+                        ctx.session.close(); 
+
+                        //todo: database deletes the phone number, and their password, and all fo their messages. 
                     }
                     
-
-
-
-                    //!GUI gets user message here 
-                    
-                    var user_id = userUsernameMap.get(ctx); //get the username of the client that sent the message
-                    var user_message = ctx.message(); //get the message that the client sent
                 });
                 
-                //! what if I wanted to print the error to the webpage? 
                 ws.onError(ctx -> {
                     System.out.println("An error occurred: "); //print the error message if an error occurs
                 });
 
-                //!what if I wanted to print this disconneciton info on the webpage?
                 ws.onClose(ctx -> {
                     System.out.println(ctx.sessionId() + " disconnected"); //print the session id of the client that just disconnected
                     userUsernameMap.remove(ctx); //remove the client from the map when they disconnect
                 }); 
 
             })
-            .start(7070); //!
+            .start(7070); 
 
         //define the websocket connection's endpoint: 
         
        
     }
 }
-
-
-
-
-
-/*Step-by-Step Event Flow
-
-    GUI: User types message/username, GUI code does webSocket.send(gson.toJson(new Message("Ferida", "Hi!"))) after connect.
-
-    Network: JSON string travels over open WS connection to server.
-
-    Server onMessage(ctx): Automatically triggered; String rawJson = ctx.message(); gets full JSON like {"username":"Ferida","text":"Hi!"}.
-
-    Parse: Use Message msg = ctx.messageAsClass(Message.class); (Javalin auto-Jackson) or manual ObjectMapper mapper = new ObjectMapper(); Message msg = mapper.readValue(rawJson, Message.class);.
-
-    Process: Get String user = msg.username(); String text = msg.text();, prepend user like "Ferida: Hi!", broadcast userUsernameMap.forEach((c, u) -> c.send(formattedMsg));.
-
-    GUI receives: All clients (including sender) get broadcast in their onMessage handler, append to chat display
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    String raw = ctx.message();
-try {
-    ObjectMapper mapper = new ObjectMapper();
-    Message msg = mapper.readValue(raw, Message.class);
-    String formatted = userUsernameMap.get(ctx) + ": " + msg.text;
-    userUsernameMap.forEach((c, u) -> c.send(formatted));
-} catch (Exception e) {
-    ctx.send("Invalid JSON");
-}
-*/
