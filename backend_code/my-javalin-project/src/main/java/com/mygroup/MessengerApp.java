@@ -6,7 +6,6 @@ import java.util.Map;
 import io.javalin.websocket.WsContext;
 import java.util.concurrent.ConcurrentHashMap;
 import com.google.gson.Gson; //import the Gson library for JSON parsing --> possible only when we added the Maven dependency
-import java.util.ArrayList;
 
 //these will be for parsing the JSON string for only the type field first
 import com.google.gson.JsonParser;
@@ -27,8 +26,6 @@ public class MessengerApp
 
 
         private static final Map<WsContext, String> ctx_and_phones = new ConcurrentHashMap<>();
-        private static final Map<WsContext, String> userUsernameMap = new ConcurrentHashMap<>();
-        private static final ArrayList<String> allNumbers = new ArrayList<>(); //this array will never have its numbers taken out, unless the user deletes their account
 
 
         //clases that have database functionality: 
@@ -96,7 +93,7 @@ public class MessengerApp
         PostgresMessageRepository messageRepo = new PostgresMessageRepository(); 
         
         //create the websocket, which will be the server that all clients connect to:
-        Javalin app = Javalin.create()//create the websocket server, and its
+        Javalin.create()//create the websocket server, and its
 
 
             //define the websocket endpoint --> you only see this if you enter the url into the browser
@@ -143,10 +140,6 @@ public class MessengerApp
                         AuthResult result = userRepo.login(new_user.phone_number, new_user.password);
 
 
-
-                        //!create a success/failure class instantiation to send as json
-                        //login_register_gui_json resultMessage = new login_register_gui_json(); 
-
                         if (result.success){
 
                             ctx.send("{\"type\": \"login_success\", \"phone\": \"" + new_user.phone_number + "\"}");
@@ -169,6 +162,7 @@ public class MessengerApp
                         }
 
 
+
                     }else if (type.equals("register")){
                         RegisterInfo new_register = gson.fromJson(rawJson, RegisterInfo.class);
 
@@ -185,14 +179,15 @@ public class MessengerApp
 
                     }else if (type.equals("logout")){
                         
-                        //get the number that is logging out, remove its ctx connection, and remove its number from the array list of numbers
-                        userUsernameMap.remove(ctx);
 
                         userRepo.logout(ctx_and_phones.get(ctx)); 
 
-                        //!ctx.send("You are being disconnected"); 
+                        
+                        ctx.send("{\"type\": \"logging_out\", \"message\": \"logging out: " + ctx_and_phones.get(ctx) + "\"}");                        
 
+                        ctx_and_phones.remove(ctx); 
                         ctx.session.close(); 
+
 
                     } 
 
@@ -220,14 +215,14 @@ public class MessengerApp
 
                     else if (type.equals("block")){
 
-                        Block blocked = gson.fromJson(rawJson, Block.class);
-                        String connection_to_remove = blocked.phone_number;
+                        Block blocked_info = gson.fromJson(rawJson, Block.class); 
 
-                        //todo: send message
+                        ctx.send("{\"type\": \"successfully_blocked\", \"message\": \"successfully blocked: " + blocked_info.phone_number + "\"}");                        
 
                     }else if (type.equals("report")){
-                        Report reported = gson.fromJson(rawJson, Report.class);
-                        //todo: send a message
+                        Report reported_info = gson.fromJson(rawJson, Report.class);
+                        
+                        ctx.send("{\"type\": \"successfully_reported\", \"message\": \"successfully reported: " + reported_info.phone_number + "\"}"); 
                     }
                     
 
@@ -242,11 +237,12 @@ public class MessengerApp
 
                 //this happens when the user closes their GUI window
                 ws.onClose(ctx -> {
+
                     //print the session id of the client that just disconnected
                     System.out.println(ctx.sessionId() + " disconnected"); 
 
-                    //remove the client from the map when they disconnect
-                    userUsernameMap.remove(ctx); 
+                    ctx_and_phones.remove(ctx); 
+
                 });
 
             })
