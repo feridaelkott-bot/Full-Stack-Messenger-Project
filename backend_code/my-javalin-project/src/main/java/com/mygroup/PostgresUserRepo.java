@@ -68,7 +68,7 @@ public class PostgresUserRepo implements UserRepository{
             //Phone number invalid or not found
             if(!rs.next()) return AuthResult.failure("Invalid phone number or password.");
             String storedHash = rs.getString("password_hash");
-            if(BCrypt.checkpw(password, storedHash)) return AuthResult.failure("Invalid phone number or password.");
+            if(!BCrypt.checkpw(password, storedHash)) return AuthResult.failure("Invalid phone number or password.");
 
             //Changing the status to online
             setOnlineStatus(phoneNumber, true);
