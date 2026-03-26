@@ -13,6 +13,7 @@ import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 // for low level socket and connection needs
@@ -37,6 +38,26 @@ public class MessengerGui extends Application {
 
     private VBox chatMessageBox = null; // live ref so incoming msgs can append
     private Label loginFeedbackLabel = null; // live ref so server errors can update it
+
+    // live ref to sidebar so new contacts can be added without rebuilding the whole page
+    private VBox contactSidebar = null;
+
+    // connection resilience state
+    private volatile boolean isSocketConnected = false;
+    private volatile boolean connectInProgress = false;
+    private volatile boolean reconnectScheduled = false;
+    private volatile boolean shuttingDown = false;
+    private Timer heartbeatTimer = null;
+    private Timer reconnectTimer = null;
+    private long lastPongAtMillis = 0L;
+    private int reconnectAttempt = 0;
+    private boolean autoReauthInProgress = false;
+    private String lastLoginPhone = "";
+    private String lastLoginPassword = "";
+
+    private static final long HEARTBEAT_INTERVAL_MS = 20000;
+    private static final long PONG_TIMEOUT_MS = 70000;
+    private static final long MAX_RECONNECT_DELAY_MS = 10000;
 
 
     // data classes for json formatting
@@ -65,19 +86,24 @@ public class MessengerGui extends Application {
     class NewMessageRequest {
         String type = "message"; // backend checks type.equals("message")
         String toPhone;
-        String message;
-        NewMessageRequest(String toPhone, String message) {
+        String fromPhone; // backend Message class requires fromPhone, filled from currentPhone
+        String textMessage; // backend Message class uses textMessage not message
+        NewMessageRequest(String toPhone, String textMessage) {
             this.toPhone = toPhone;
-            this.message = message;
+            this.fromPhone = currentPhone; // grab logged in phone at send time
+            this.textMessage = textMessage;
         }
     }
 
     // sent when user clicks a chat tab to load history
-    class ExistingMessageRequest {
-        String type = "existing message";
-        String contact;
-        ExistingMessageRequest(String contact) {
-            this.contact = contact;
+    // backend checks type.equals("retrieve messages")
+    class RetrieveMessagesRequest {
+        String type = "retrieve messages";
+        String userPhone1;
+        String userPhone2;
+        RetrieveMessagesRequest(String userPhone2) {
+            this.userPhone1 = currentPhone; // always the logged in user
+            this.userPhone2 = userPhone2;
         }
     }
 
@@ -144,6 +170,9 @@ public class MessengerGui extends Application {
                 feedbackLabel.setText("Please enter a phone number and password.");
                 return;
             }
+            lastLoginPhone = phone;
+            lastLoginPassword = pass;
+            autoReauthInProgress = false;
             sendToServer(gson.toJson(new LoginRequest(phone, pass))); // push to server if connection good
         });
 
@@ -180,7 +209,6 @@ public class MessengerGui extends Application {
 
 
     // todo : link settingsBtn to a settings screen
-    // todo : link newMessageBtn to a new message dialog
     // todo : add remove/block/report buttons inside buildContactTab
     private void showMainPage() {
         Label appTitle = new Label("Messenger");
@@ -197,11 +225,12 @@ public class MessengerGui extends Application {
         topBar.setPadding(new Insets(10, 15, 10, 15));
         topBar.setStyle("-fx-background-color: #e8e8e8; -fx-border-color: #cccccc; -fx-border-width: 0 0 1 0;");
 
-        VBox contactSidebar = new VBox(6);
+        contactSidebar = new VBox(6); // save ref so new contacts can be appended later
         contactSidebar.setPadding(new Insets(10));
 
-        Button newMessageBtn = new Button("+ New Message"); // todo : hook up to new message dialog
+        Button newMessageBtn = new Button("+ New Message");
         newMessageBtn.setMaxWidth(Double.MAX_VALUE);
+        newMessageBtn.setOnAction(e -> showNewMessageDialog()); // opens dialog to start a new chat
         contactSidebar.getChildren().add(newMessageBtn);
 
         for (String contact : contactList) {
@@ -231,6 +260,79 @@ public class MessengerGui extends Application {
         primaryStage.show(); // needed when transitioning from login screen
     }
 
+    // asks for recipient phone + first message then sends both
+    private void showNewMessageDialog() {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setTitle("New Message");
+
+        TextField toPhoneInput = new TextField();
+        toPhoneInput.setPromptText("Recipient phone number");
+
+        TextField messageInput = new TextField();
+        messageInput.setPromptText("Message (max 200 chars)");
+        messageInput.textProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal.length() > 200) messageInput.setText(newVal.substring(0, 200)); // enforce 200 char cap
+        });
+
+        Label charCount = new Label("0 / 200");
+        messageInput.textProperty().addListener((obs, old, newVal) ->
+                charCount.setText(newVal.length() + " / 200")
+        );
+
+        Label errorLabel = new Label("");
+        errorLabel.setTextFill(Color.RED);
+
+        Button sendBtn = new Button("Send");
+        sendBtn.setPrefWidth(110);
+        sendBtn.setOnAction(e -> {
+            String to  = toPhoneInput.getText().trim();
+            String msg = messageInput.getText().trim();
+            if (to.isEmpty() || msg.isEmpty()) {
+                errorLabel.setText("Both fields are required.");
+                return;
+            }
+            // send the message to backend
+            sendToServer(gson.toJson(new NewMessageRequest(to, msg)));
+
+            // add contact to list + sidebar if not already there
+            if (!contactList.contains(to)) {
+                contactList.add(to);
+                if (contactSidebar != null) {
+                    contactSidebar.getChildren().add(buildContactTab(to)); // append tab live without rebuilding page
+                }
+            }
+
+            // cache msg locally n close dialog
+            String line = "You: " + msg;
+            messageHistory.computeIfAbsent(to, k -> new ArrayList<>()).add(line);
+            dialog.close();
+
+            openChatScreen(to); // jump straight into the chat
+        });
+
+        Button cancelBtn = new Button("Cancel");
+        cancelBtn.setPrefWidth(110);
+        cancelBtn.setOnAction(e -> dialog.close());
+
+        HBox btnRow = new HBox(10, sendBtn, cancelBtn);
+        btnRow.setAlignment(Pos.CENTER);
+
+        VBox layout = new VBox(12,
+                makeTitleLabel("New Message"),
+                toPhoneInput,
+                messageInput,
+                charCount,
+                btnRow,
+                errorLabel
+        );
+        layout.setPadding(new Insets(24));
+        layout.setAlignment(Pos.CENTER);
+
+        dialog.setScene(new Scene(layout, 360, 260));
+        dialog.showAndWait();
+    }
+
     // todo : add remove/block/report buttons to this row
     private HBox buildContactTab(String contact) {
         Label nameLabel = new Label(contact);
@@ -252,7 +354,8 @@ public class MessengerGui extends Application {
     private void openChatScreen(String contact) {
         activeChatContact = contact;
 
-        sendToServer(gson.toJson(new ExistingMessageRequest(contact))); // ask backend for history
+        // ask backend for history between current user and this contact
+        sendToServer(gson.toJson(new RetrieveMessagesRequest(contact)));
 
         VBox messagesBox = new VBox(8);
         messagesBox.setPadding(new Insets(10));
@@ -335,7 +438,7 @@ public class MessengerGui extends Application {
         bubble.setStyle(isOwn
                 ? "-fx-background-color: #dcf8c6; -fx-background-radius: 14; -fx-font-size: 13;"
                 : "-fx-background-color: #ffffff; -fx-background-radius: 14; -fx-font-size: 13;"
-                + "-fx-border-color: #e0e0e0; -fx-border-radius: 14;");
+                  + "-fx-border-color: #e0e0e0; -fx-border-radius: 14;");
 
         HBox wrapper = new HBox(bubble);
         wrapper.setAlignment(isOwn ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
@@ -345,6 +448,12 @@ public class MessengerGui extends Application {
 
 
     private void connectToServer() {
+        if (shuttingDown || isSocketConnected || connectInProgress) {
+            return;
+        }
+
+        connectInProgress = true;
+
         // setup client to handle async websocket build
         HttpClient client = HttpClient.newHttpClient();
         client.newWebSocketBuilder()
@@ -353,7 +462,22 @@ public class MessengerGui extends Application {
                     @Override
                     public void onOpen(WebSocket webSocket) {
                         // on successful connection
+                        MessengerGui.this.webSocket = webSocket;
+                        isSocketConnected = true;
+                        connectInProgress = false;
+                        reconnectScheduled = false;
+                        reconnectAttempt = 0;
+                        lastPongAtMillis = System.currentTimeMillis();
+                        startHeartbeat();
+
                         System.out.println("Connected to backend server!");
+
+                        if (!currentPhone.isEmpty() && !lastLoginPhone.isEmpty() && !lastLoginPassword.isEmpty()) {
+                            // sign back in silently after reconnect so routing resumes without user intervention
+                            autoReauthInProgress = true;
+                            sendToServer(gson.toJson(new LoginRequest(lastLoginPhone, lastLoginPassword)));
+                        }
+
                         WebSocket.Listener.super.onOpen(webSocket);
                     }
 
@@ -364,21 +488,109 @@ public class MessengerGui extends Application {
                         handleServerMessage(data.toString());
                         return WebSocket.Listener.super.onText(webSocket, data, last);
                     }
+
+                    @Override
+                    public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+                        markDisconnected("close " + statusCode + " " + reason);
+                        scheduleReconnect();
+                        return WebSocket.Listener.super.onClose(webSocket, statusCode, reason);
+                    }
+
+                    @Override
+                    public void onError(WebSocket webSocket, Throwable error) {
+                        String msg = error != null ? error.getMessage() : "unknown";
+                        markDisconnected("error " + msg);
+                        scheduleReconnect();
+                        WebSocket.Listener.super.onError(webSocket, error);
+                    }
                 })
                 .thenAccept(ws -> this.webSocket = ws) // save socket ref for buttons to use
                 .exceptionally(ex -> {
                     // catch connection fails
+                    connectInProgress = false;
                     System.out.println("Connection failed: " + ex.getMessage());
+                    scheduleReconnect();
                     return null;
                 });
     }
 
+    // need so server doesnt time out and ping pongs on
+    private void startHeartbeat() {
+        stopHeartbeat();
+        heartbeatTimer = new Timer(true);
+        heartbeatTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (!isSocketConnected || shuttingDown) {
+                    return;
+                }
+
+                long now = System.currentTimeMillis();
+                if (lastPongAtMillis > 0 && now - lastPongAtMillis > PONG_TIMEOUT_MS) {
+                    markDisconnected("pong timeout");
+                    try {
+                        if (webSocket != null) {
+                            webSocket.abort();
+                        }
+                    } catch (Exception ignored) {
+                        // best-effort close
+                    }
+                    scheduleReconnect();
+                    return;
+                }
+
+                sendToServer("{\"type\":\"ping\"}");
+            }
+        }, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS);
+    }
+
+    private void stopHeartbeat() {
+        if (heartbeatTimer != null) {
+            heartbeatTimer.cancel();
+            heartbeatTimer = null;
+        }
+    }
+
+    private void scheduleReconnect() {
+        if (shuttingDown || reconnectScheduled) {
+            return;
+        }
+
+        reconnectScheduled = true;
+        reconnectAttempt++;
+
+        long delay = Math.min((1L << Math.min(reconnectAttempt - 1, 6)) * 1000L, MAX_RECONNECT_DELAY_MS);
+        System.out.println("Reconnecting in " + delay + "ms...");
+
+        if (reconnectTimer != null) {
+            reconnectTimer.cancel();
+        }
+
+        reconnectTimer = new Timer(true);
+        reconnectTimer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                reconnectScheduled = false;
+                connectToServer();
+            }
+        }, delay);
+    }
+
+    private void markDisconnected(String reason) {
+        isSocketConnected = false;
+        connectInProgress = false;
+        webSocket = null;
+        stopHeartbeat();
+        System.out.println("Socket disconnected: " + reason);
+    }
+
     private void sendToServer(String json) {
-        if (webSocket != null) {
+        if (webSocket != null && isSocketConnected) {
             webSocket.sendText(json, true);
             System.out.println("GUI sent: " + json);
         } else {
             System.out.println("Cannot send - not connected to server.");
+            scheduleReconnect();
         }
     }
 
@@ -393,23 +605,46 @@ public class MessengerGui extends Application {
                 switch (type) {
 
                     case "login_success": { // login confirmed, move to main page
+                        boolean wasAutoReauth = autoReauthInProgress;
+                        autoReauthInProgress = false;
+
                         if (json.has("phone")) currentPhone = json.get("phone").getAsString();
+
+                        if (!wasAutoReauth) {
+                            contactList.clear();
+                            messageHistory.clear();
+                        }
+
                         if (json.has("contacts")) {
                             json.getAsJsonArray("contacts").forEach(el -> {
                                 String c = el.getAsString();
-                                if (!contactList.contains(c)) contactList.add(c);
+                                if (!contactList.contains(c)) {
+                                    contactList.add(c);
+                                    if (contactSidebar != null) {
+                                        contactSidebar.getChildren().add(buildContactTab(c));
+                                    }
+                                }
                             });
                         }
-                        showMainPage();
+
+                        if (!wasAutoReauth) {
+                            showMainPage();
+                        }
                         break;
                     }
 
                     case "login_error": { // login rejected, show error on login screen
+                        autoReauthInProgress = false;
                         String msg = json.has("message") ? json.get("message").getAsString() : "Login failed. Please try again.";
                         if (loginFeedbackLabel != null) {
                             loginFeedbackLabel.setTextFill(Color.RED);
                             loginFeedbackLabel.setText(msg);
                         }
+                        break;
+                    }
+
+                    case "pong": {
+                        lastPongAtMillis = System.currentTimeMillis();
                         break;
                     }
 
@@ -431,18 +666,14 @@ public class MessengerGui extends Application {
                         break;
                     }
 
-                    case "message_history": { // full history for a contact
-                        String contact = json.has("contact") ? json.get("contact").getAsString() : "";
-                        if (json.has("messages") && contact.equals(activeChatContact) && chatMessageBox != null) {
-                            chatMessageBox.getChildren().clear();
-                            List<String> hist = messageHistory.computeIfAbsent(contact, k -> new ArrayList<>());
-                            hist.clear();
-                            json.getAsJsonArray("messages").forEach(el -> {
-                                String line = el.getAsString();
-                                hist.add(line);
-                                chatMessageBox.getChildren().add(buildMessageBubble(line));
-                            });
-                        }
+                    case "logging_out": { // backend confirmed logout, go back to login
+                        currentPhone = "";
+                        contactList.clear();
+                        messageHistory.clear();
+                        activeChatContact = "";
+                        chatMessageBox = null;
+                        contactSidebar = null;
+                        showLoginScreen();
                         break;
                     }
 
@@ -457,12 +688,79 @@ public class MessengerGui extends Application {
                             chatMessageBox.getChildren().add(buildMessageBubble(line)); // append live if chat is open
                         }
 
-                        if (!contactList.contains(from)) contactList.add(from);
+                        if (!contactList.contains(from)) {
+                            contactList.add(from);
+                            // If user is on home page, add the new sender to the live sidebar immediately.
+                            if (contactSidebar != null) {
+                                contactSidebar.getChildren().add(buildContactTab(from));
+                            }
+                        }
                         break;
                     }
 
-                    default:
-                        System.out.println("Unhandled server message type: " + type);
+                    case "message_error": {
+                        String msg = json.has("message") ? json.get("message").getAsString() : "Message failed to send.";
+                        System.out.println("Message error: " + msg);
+                        break;
+                    }
+
+                    case "message_history": {
+                        String contact = json.has("contact") ? json.get("contact").getAsString() : activeChatContact;
+                        List<String> retrieved = new ArrayList<>();
+                        if (json.has("messages") && json.get("messages").isJsonArray()) {
+                            json.getAsJsonArray("messages").forEach(el -> retrieved.add(el.getAsString()));
+                        }
+
+                        List<String> hist = messageHistory.computeIfAbsent(contact, k -> new ArrayList<>());
+
+                        // fill up from server for fresh app runs; do not overwrite newer local messages
+                        if (hist.isEmpty()) {
+                            hist.addAll(retrieved);
+                        }
+
+                        if (!contactList.contains(contact)) {
+                            contactList.add(contact);
+                            if (contactSidebar != null) {
+                                contactSidebar.getChildren().add(buildContactTab(contact));
+                            }
+                        }
+
+                        if (chatMessageBox != null && contact.equals(activeChatContact)) {
+                            chatMessageBox.getChildren().clear();
+                            for (String line : hist) {
+                                chatMessageBox.getChildren().add(buildMessageBubble(line));
+                            }
+                        }
+                        break;
+                    }
+
+                    default: {
+                        // backend sends history as a plain map with no "type" field
+                        // so it falls here, treat it as backfill instead of replacing newer cached messages
+                        if (json.has("m1") && chatMessageBox != null) {
+                            List<String> hist = messageHistory.computeIfAbsent(activeChatContact, k -> new ArrayList<>());
+                            List<String> retrieved = new ArrayList<>();
+                            int i = 1;
+                            while (json.has("m" + i)) {
+                                String line = json.get("m" + i).getAsString();
+                                retrieved.add(line);
+                                i++;
+                            }
+
+                            // first use retrieved history
+                            // later keep local cache so newly sent/received lines are not wiped.
+                            if (hist.isEmpty()) {
+                                hist.addAll(retrieved);
+                            }
+
+                            chatMessageBox.getChildren().clear();
+                            for (String line : hist) {
+                                chatMessageBox.getChildren().add(buildMessageBubble(line));
+                            }
+                        } else {
+                            System.out.println("Unhandled server message type: " + type);
+                        }
+                    }
                 }
 
             } catch (Exception e) {
@@ -485,6 +783,7 @@ public class MessengerGui extends Application {
             messageHistory.clear();
             activeChatContact = "";
             chatMessageBox = null;
+            contactSidebar = null;
             showLoginScreen();
         } else {
             System.out.println("Unhandled plain server response: " + raw);
@@ -500,6 +799,12 @@ public class MessengerGui extends Application {
 
     @Override
     public void stop() {
+        shuttingDown = true;
+        stopHeartbeat();
+        if (reconnectTimer != null) {
+            reconnectTimer.cancel();
+            reconnectTimer = null;
+        }
         // clean up connection if user closes window
         if (webSocket != null) {
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Application closed");
