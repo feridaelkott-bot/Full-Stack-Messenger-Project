@@ -430,8 +430,15 @@ public class MessengerGui extends Application {
 
     // green bubble right for own msgs, white bubble left for theirs
     private HBox buildMessageBubble(String message) {
-        boolean isOwn = message.startsWith("You:");
-        Label bubble = new Label(message);
+        boolean isOwn = message.startsWith("You:") || (!currentPhone.isEmpty() && message.startsWith(currentPhone + ":"));
+
+        String bubbleText = message;
+        int prefixSeparator = message.indexOf(": ");
+        if (prefixSeparator >= 0 && prefixSeparator + 2 < message.length()) {
+            bubbleText = message.substring(prefixSeparator + 2);
+        }
+
+        Label bubble = new Label(bubbleText);
         bubble.setWrapText(true);
         bubble.setMaxWidth(420);
         bubble.setPadding(new Insets(8, 14, 8, 14));
@@ -711,12 +718,23 @@ public class MessengerGui extends Application {
                             json.getAsJsonArray("messages").forEach(el -> retrieved.add(el.getAsString()));
                         }
 
-                        List<String> hist = messageHistory.computeIfAbsent(contact, k -> new ArrayList<>());
+                        List<String> existing = messageHistory.get(contact);
+                        List<String> hist;
 
-                        // fill up from server for fresh app runs; do not overwrite newer local messages
-                        if (hist.isEmpty()) {
-                            hist.addAll(retrieved);
+                        if (existing == null || existing.isEmpty()) {
+                            // first open in this run use backend backfill for last 5 messages from chat
+                            hist = new ArrayList<>(retrieved);
+                        } else {
+                            // if no exit from app, jus back button, keep local in-session flow and only add unseen backfill lines
+                            hist = new ArrayList<>(existing);
+                            for (String line : retrieved) {
+                                if (!hist.contains(line)) {
+                                    hist.add(line);
+                                }
+                            }
                         }
+
+                        messageHistory.put(contact, hist);
 
                         if (!contactList.contains(contact)) {
                             contactList.add(contact);

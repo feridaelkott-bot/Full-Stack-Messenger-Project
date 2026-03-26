@@ -15,6 +15,7 @@ import com.google.gson.JsonObject;
 import java.util.List; 
 import java.util.HashMap;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -30,7 +31,6 @@ public class MessengerApp
         //-->ConcurrentHashMap is useful since many clients can connect at once --> concurrent hash maps are thread-safe and allow multiple threads to access them at once*/
 
 
-        // Session-id keyed maps are stable across websocket callbacks.
         private static final Map<String, String> session_and_phones = new ConcurrentHashMap<>();
         private static final Map<String, WsContext> session_and_contexts = new ConcurrentHashMap<>();
 
@@ -125,6 +125,49 @@ public class MessengerApp
             }
 
             return contacts;
+        }
+
+        private static List<String> getLastConversationMessages(String userPhone1, String userPhone2, int limit) {
+            List<String> messages = new ArrayList<>();
+
+            String sql = "SELECT m.sender_phone, u.username, m.msg_content, m.sent_at " +
+                    "FROM messages m " +
+                    "JOIN users u ON u.phone_number = m.sender_phone " +
+                    "WHERE (m.sender_phone = ? AND m.recipient_phone = ?) " +
+                    "OR (m.sender_phone = ? AND m.recipient_phone = ?) " +
+                    "ORDER BY m.sent_at DESC " +
+                    "LIMIT ?";
+
+            try (Connection connection = DatabaseManager.getConnection();
+                 PreparedStatement stmt = connection.prepareStatement(sql)) {
+
+                stmt.setString(1, userPhone1);
+                stmt.setString(2, userPhone2);
+                stmt.setString(3, userPhone2);
+                stmt.setString(4, userPhone1);
+                stmt.setInt(5, limit);
+
+                ResultSet rs = stmt.executeQuery();
+                while (rs.next()) {
+                    String senderPhone = rs.getString("sender_phone");
+                    String senderLabel = userPhone1 != null && userPhone1.equals(senderPhone)
+                            ? "You"
+                            : rs.getString("username");
+
+                    if (senderLabel == null || senderLabel.isBlank()) {
+                        senderLabel = senderPhone;
+                    }
+
+                    String formatted = senderLabel + ": " + rs.getString("msg_content");
+                    messages.add(formatted);
+                }
+            } catch (SQLException e) {
+                System.err.println("Conversation fetch failed: " + e.getMessage());
+            }
+
+            // query gets newest-first, reverse for normal chat display order
+            Collections.reverse(messages);
+            return messages;
         }
 
 
@@ -295,8 +338,8 @@ public class MessengerApp
 
                         retrieveMessages retrieve = gson.fromJson(rawJson, retrieveMessages.class); 
 
-                        //limit of 5 messages from history for simplicity
-                        List<String> messages = messageRepo.getConversation(retrieve.userPhone1, retrieve.userPhone2, 5); 
+                        // return latest 5 messages in this conversation
+                        List<String> messages = getLastConversationMessages(retrieve.userPhone1, retrieve.userPhone2, 5); 
 
                         Map<String, Object> historyPayload = new HashMap<>();
                         historyPayload.put("type", "message_history");
