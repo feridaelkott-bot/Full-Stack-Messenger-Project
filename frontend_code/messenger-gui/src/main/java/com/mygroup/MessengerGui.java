@@ -35,6 +35,7 @@ public class MessengerGui extends Application {
 
     private final Map<String, List<String>> messageHistory = new HashMap<>(); // cached msgs per contact
     private final List<String> contactList = new ArrayList<>(); // sidebar contacts
+    private final Map<String, String> contactDisplayNames = new HashMap<>(); // phone -> username label
 
     private VBox chatMessageBox = null; // live ref so incoming msgs can append
     private Label loginFeedbackLabel = null; // live ref so server errors can update it
@@ -75,9 +76,11 @@ public class MessengerGui extends Application {
 
     class RegisterRequest {
         String type = "register";
+        String username;
         String phone_number; // backend RegisterInfo uses phone_number only, no username
         String password;
-        RegisterRequest(String phone_number, String password) {
+        RegisterRequest(String username, String phone_number, String password) {
+            this.username = username;
             this.phone_number = phone_number;
             this.password = password;
         }
@@ -148,6 +151,9 @@ public class MessengerGui extends Application {
         PasswordField passwordInput = new PasswordField();
         passwordInput.setPromptText("Password");
 
+        TextField usernameInput = new TextField();
+        usernameInput.setPromptText("Username (for registration)");
+
         // rough ui setup
         // red for errors, green for register success
         Label feedbackLabel = new Label("");
@@ -177,13 +183,14 @@ public class MessengerGui extends Application {
         });
 
         registerButton.setOnAction(e -> {
+            String username = usernameInput.getText().trim();
             String phone = phoneInput.getText().trim(); // grab text n put into obj
             String pass  = passwordInput.getText().trim();
-            if (phone.isEmpty() || pass.isEmpty()) {
-                feedbackLabel.setText("Phone number and password are required to register.");
+            if (username.isEmpty() || phone.isEmpty() || pass.isEmpty()) {
+                feedbackLabel.setText("Username, phone number and password are required to register.");
                 return;
             }
-            sendToServer(gson.toJson(new RegisterRequest(phone, pass))); // auto formats to json, includes "type": "register"
+            sendToServer(gson.toJson(new RegisterRequest(username, phone, pass))); // auto formats to json, includes "type": "register"
         });
 
         HBox buttonRow = new HBox(10, loginButton, registerButton);
@@ -194,6 +201,7 @@ public class MessengerGui extends Application {
                 makeTitleLabel("Messenger App"),
                 phoneInput,
                 passwordInput,
+                usernameInput,
                 buttonRow,
                 feedbackLabel
         );
@@ -298,6 +306,7 @@ public class MessengerGui extends Application {
             // add contact to list + sidebar if not already there
             if (!contactList.contains(to)) {
                 contactList.add(to);
+                contactDisplayNames.putIfAbsent(to, to);
                 if (contactSidebar != null) {
                     contactSidebar.getChildren().add(buildContactTab(to)); // append tab live without rebuilding page
                 }
@@ -335,7 +344,8 @@ public class MessengerGui extends Application {
 
     // todo : add remove/block/report buttons to this row
     private HBox buildContactTab(String contact) {
-        Label nameLabel = new Label(contact);
+        String displayName = contactDisplayNames.getOrDefault(contact, contact);
+        Label nameLabel = new Label(displayName);
         nameLabel.setMaxWidth(Double.MAX_VALUE);
         HBox.setHgrow(nameLabel, Priority.ALWAYS);
         nameLabel.setOnMouseClicked(e -> openChatScreen(contact));
@@ -410,7 +420,7 @@ public class MessengerGui extends Application {
             showMainPage();
         });
 
-        Label contactLabel = new Label("Chat with: " + contact);
+        Label contactLabel = new Label("Chat with: " + contactDisplayNames.getOrDefault(contact, contact));
         contactLabel.setFont(Font.font("System", FontWeight.BOLD, 14));
 
         HBox topBar = new HBox(12, backBtn, contactLabel);
@@ -620,15 +630,32 @@ public class MessengerGui extends Application {
                         if (!wasAutoReauth) {
                             contactList.clear();
                             messageHistory.clear();
+                            contactDisplayNames.clear();
                         }
 
                         if (json.has("contacts")) {
                             json.getAsJsonArray("contacts").forEach(el -> {
-                                String c = el.getAsString();
-                                if (!contactList.contains(c)) {
-                                    contactList.add(c);
-                                    if (contactSidebar != null) {
-                                        contactSidebar.getChildren().add(buildContactTab(c));
+                                if (el.isJsonObject()) {
+                                    JsonObject contactObj = el.getAsJsonObject();
+                                    String phone = contactObj.has("phone") ? contactObj.get("phone").getAsString() : "";
+                                    String username = contactObj.has("username") ? contactObj.get("username").getAsString() : "";
+                                    if (!phone.isEmpty()) {
+                                        if (!contactList.contains(phone)) {
+                                            contactList.add(phone);
+                                        }
+                                        contactDisplayNames.put(phone, (username == null || username.isBlank()) ? phone : username);
+                                        if (contactSidebar != null) {
+                                            contactSidebar.getChildren().add(buildContactTab(phone));
+                                        }
+                                    }
+                                } else {
+                                    String c = el.getAsString();
+                                    if (!contactList.contains(c)) {
+                                        contactList.add(c);
+                                        contactDisplayNames.putIfAbsent(c, c);
+                                        if (contactSidebar != null) {
+                                            contactSidebar.getChildren().add(buildContactTab(c));
+                                        }
                                     }
                                 }
                             });
@@ -677,6 +704,7 @@ public class MessengerGui extends Application {
                         currentPhone = "";
                         contactList.clear();
                         messageHistory.clear();
+                        contactDisplayNames.clear();
                         activeChatContact = "";
                         chatMessageBox = null;
                         contactSidebar = null;
@@ -685,21 +713,29 @@ public class MessengerGui extends Application {
                     }
 
                     case "incoming_message": { // real-time msg from another user
-                        String from = json.has("from") ? json.get("from").getAsString() : "Unknown";
+                        String fromPhone = json.has("fromPhone") ? json.get("fromPhone").getAsString() :
+                                (json.has("from") ? json.get("from").getAsString() : "Unknown");
+                        String fromUsername = json.has("fromUsername") ? json.get("fromUsername").getAsString() : "";
                         String text = json.has("text") ? json.get("text").getAsString() : "";
-                        String line = from + ": " + text;
+                        String line = fromPhone + ": " + text;
 
-                        messageHistory.computeIfAbsent(from, k -> new ArrayList<>()).add(line);
+                        if (fromUsername != null && !fromUsername.isBlank()) {
+                            contactDisplayNames.put(fromPhone, fromUsername);
+                        } else {
+                            contactDisplayNames.putIfAbsent(fromPhone, fromPhone);
+                        }
 
-                        if (chatMessageBox != null && from.equals(activeChatContact)) {
+                        messageHistory.computeIfAbsent(fromPhone, k -> new ArrayList<>()).add(line);
+
+                        if (chatMessageBox != null && fromPhone.equals(activeChatContact)) {
                             chatMessageBox.getChildren().add(buildMessageBubble(line)); // append live if chat is open
                         }
 
-                        if (!contactList.contains(from)) {
-                            contactList.add(from);
+                        if (!contactList.contains(fromPhone)) {
+                            contactList.add(fromPhone);
                             // If user is on home page, add the new sender to the live sidebar immediately.
                             if (contactSidebar != null) {
-                                contactSidebar.getChildren().add(buildContactTab(from));
+                                contactSidebar.getChildren().add(buildContactTab(fromPhone));
                             }
                         }
                         break;
@@ -713,6 +749,12 @@ public class MessengerGui extends Application {
 
                     case "message_history": {
                         String contact = json.has("contact") ? json.get("contact").getAsString() : activeChatContact;
+                        String contactUsername = json.has("contactUsername") ? json.get("contactUsername").getAsString() : "";
+                        if (contactUsername != null && !contactUsername.isBlank()) {
+                            contactDisplayNames.put(contact, contactUsername);
+                        } else {
+                            contactDisplayNames.putIfAbsent(contact, contact);
+                        }
                         List<String> retrieved = new ArrayList<>();
                         if (json.has("messages") && json.get("messages").isJsonArray()) {
                             json.getAsJsonArray("messages").forEach(el -> retrieved.add(el.getAsString()));
@@ -799,6 +841,7 @@ public class MessengerGui extends Application {
             currentPhone = "";
             contactList.clear();
             messageHistory.clear();
+            contactDisplayNames.clear();
             activeChatContact = "";
             chatMessageBox = null;
             contactSidebar = null;

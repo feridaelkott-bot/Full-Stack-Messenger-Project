@@ -47,6 +47,7 @@ public class MessengerApp
             String type; //register
             String phone_number;
             String password;
+            String username;
         }
 
         public static class retrieveMessages{
@@ -89,14 +90,24 @@ public class MessengerApp
 
         }
 
-        private static List<String> getKnownContacts(String phoneNumber) {
-            List<String> contacts = new ArrayList<>();
+        private static class ContactInfo {
+            String phone;
+            String username;
+
+            ContactInfo(String phone, String username) {
+                this.phone = phone;
+                this.username = username;
+            }
+        }
+
+        private static List<ContactInfo> getKnownContacts(String phoneNumber) {
+            List<ContactInfo> contacts = new ArrayList<>();
 
             if (phoneNumber == null || phoneNumber.isBlank()) {
                 return contacts;
             }
 
-            String sql = "SELECT contact_phone FROM (" +
+            String sql = "SELECT x.contact_phone, u.username FROM (" +
                     " SELECT CASE " +
                     "   WHEN sender_phone = ? THEN recipient_phone " +
                     "   ELSE sender_phone " +
@@ -104,7 +115,8 @@ public class MessengerApp
                     " FROM messages " +
                     " WHERE sender_phone = ? OR recipient_phone = ? " +
                     " GROUP BY contact_phone" +
-                    ") x ORDER BY last_seen DESC";
+                    ") x LEFT JOIN users u ON u.phone_number = x.contact_phone " +
+                    "ORDER BY x.last_seen DESC";
 
             try (Connection connection = DatabaseManager.getConnection();
                  PreparedStatement stmt = connection.prepareStatement(sql)) {
@@ -115,9 +127,10 @@ public class MessengerApp
 
                 ResultSet rs = stmt.executeQuery();
                 while (rs.next()) {
-                    String contact = rs.getString("contact_phone");
-                    if (contact != null && !contact.isBlank()) {
-                        contacts.add(contact);
+                    String contactPhone = rs.getString("contact_phone");
+                    if (contactPhone != null && !contactPhone.isBlank()) {
+                        String username = rs.getString("username");
+                        contacts.add(new ContactInfo(contactPhone, username));
                     }
                 }
             } catch (SQLException e) {
@@ -282,6 +295,8 @@ public class MessengerApp
                             Map<String, String> incomingPayload = new HashMap<>();
                             incomingPayload.put("type", "incoming_message");
                             incomingPayload.put("from", new_message.fromPhone);
+                            incomingPayload.put("fromPhone", new_message.fromPhone);
+                            incomingPayload.put("fromUsername", getUsernameByPhone(new_message.fromPhone));
                             incomingPayload.put("text", new_message.textMessage);
                             String incomingJson = gson.toJson(incomingPayload);
 
@@ -308,8 +323,8 @@ public class MessengerApp
                     }else if (type.equals("register")){
                         RegisterInfo new_register = gson.fromJson(rawJson, RegisterInfo.class);
 
-                        // DATABASE REGISTRATION (Using phone_number for the username field too)
-                        AuthResult result = userRepo.register(new_register.phone_number, new_register.password, new_register.phone_number);
+                        // DATABASE REGISTRATION
+                        AuthResult result = userRepo.register(new_register.username, new_register.password, new_register.phone_number);
 
                         if (result.success) {
                             ctx.send("{\"type\": \"register_success\", \"message\": \"" + result.message + "\"}");
@@ -344,6 +359,7 @@ public class MessengerApp
                         Map<String, Object> historyPayload = new HashMap<>();
                         historyPayload.put("type", "message_history");
                         historyPayload.put("contact", retrieve.userPhone2);
+                        historyPayload.put("contactUsername", getUsernameByPhone(retrieve.userPhone2));
                         historyPayload.put("messages", messages);
 
                         //send typed message history to GUI as json:
@@ -392,5 +408,27 @@ public class MessengerApp
         //define the websocket connection's endpoint:
 
 
+    }
+    // get username by linking it to the number so the displayed thing will be username even tho phone number for login
+    private static String getUsernameByPhone(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.isBlank()) {
+            return "";
+        }
+
+        String sql = "SELECT username FROM users WHERE phone_number = ?";
+
+        try (Connection connection = DatabaseManager.getConnection();
+             PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, phoneNumber);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                String username = rs.getString("username");
+                return username != null ? username : "";
+            }
+        } catch (SQLException e) {
+            System.out.println("Failed to load username: " + e.getMessage());
+        }
+
+        return "";
     }
 }
