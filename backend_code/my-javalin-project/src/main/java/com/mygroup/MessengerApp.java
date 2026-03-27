@@ -14,6 +14,12 @@ import com.google.gson.JsonObject;
 
 import java.util.List; 
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 
 
 
@@ -25,49 +31,51 @@ public class MessengerApp
         //-->ConcurrentHashMap is useful since many clients can connect at once --> concurrent hash maps are thread-safe and allow multiple threads to access them at once*/
 
 
-        private static final Map<WsContext, String> ctx_and_phones = new ConcurrentHashMap<>();
+        private static final Map<String, String> session_and_phones = new ConcurrentHashMap<>();
+        private static final Map<String, WsContext> session_and_contexts = new ConcurrentHashMap<>();
 
 
         //clases that have database functionality: 
-        public class LoginInfo{
+        public static class LoginInfo{
 
             String type; //login
             String phone_number;
             String password;
 
         }
-        public class RegisterInfo{
+        public static class RegisterInfo{
             String type; //register
             String phone_number;
             String password;
+            String username;
         }
 
-        public class retrieveMessages{
+        public static class retrieveMessages{
             String type; //retrieve messages
             String userPhone1; 
             String userPhone2; 
 
         }
 
-        public class Message{
+        public static class Message{
             String type; //new message
             String toPhone;
             String fromPhone;
             String textMessage; 
         }
 
-        public class Logout{
+        public static class Logout{
             String type; //logout
         }
 
         
 
         //classes without database funcitonality
-        public class Block{
+        public static class Block{
             String type; //block
             String phone_number;
         }
-        public class Report{
+        public static class Report{
             String type;//report
             String phone_number;
         }
@@ -80,6 +88,99 @@ public class MessengerApp
             String phone; 
             String message; 
 
+        }
+
+        private static class ContactInfo {
+            String phone;
+            String username;
+
+            ContactInfo(String phone, String username) {
+                this.phone = phone;
+                this.username = username;
+            }
+        }
+
+        private static List<ContactInfo> getKnownContacts(String phoneNumber) {
+            List<ContactInfo> contacts = new ArrayList<>();
+
+            if (phoneNumber == null || phoneNumber.isBlank()) {
+                return contacts;
+            }
+
+            String sql = "SELECT x.contact_phone, u.username FROM (" +
+                    " SELECT CASE " +
+                    "   WHEN sender_phone = ? THEN recipient_phone " +
+                    "   ELSE sender_phone " +
+                    " END AS contact_phone, MAX(sent_at) AS last_seen " +
+                    " FROM messages " +
+                    " WHERE sender_phone = ? OR recipient_phone = ? " +
+                    " GROUP BY contact_phone" +
+                    ") x LEFT JOIN users u ON u.phone_number = x.contact_phone " +
+                    "ORDER BY x.last_seen DESC";
+
+            try (Connection connection = DatabaseManager.getConnection();
+                 PreparedStatement stmt = connection.prepareStatement(sql)) {
+
+                stmt.setString(1, phoneNumber);
+                stmt.setString(2, phoneNumber);
+                stmt.setString(3, phoneNumber);
+
+                ResultSet rs = stmt.executeQuery();
+                while (rs.next()) {
+                    String contactPhone = rs.getString("contact_phone");
+                    if (contactPhone != null && !contactPhone.isBlank()) {
+                        String username = rs.getString("username");
+                        contacts.add(new ContactInfo(contactPhone, username));
+                    }
+                }
+            } catch (SQLException e) {
+                System.out.println("Failed to load known contacts: " + e.getMessage());
+            }
+
+            return contacts;
+        }
+
+        private static List<String> getLastConversationMessages(String userPhone1, String userPhone2, int limit) {
+            List<String> messages = new ArrayList<>();
+
+            String sql = "SELECT m.sender_phone, u.username, m.msg_content, m.sent_at " +
+                    "FROM messages m " +
+                    "JOIN users u ON u.phone_number = m.sender_phone " +
+                    "WHERE (m.sender_phone = ? AND m.recipient_phone = ?) " +
+                    "OR (m.sender_phone = ? AND m.recipient_phone = ?) " +
+                    "ORDER BY m.sent_at DESC " +
+                    "LIMIT ?";
+
+            try (Connection connection = DatabaseManager.getConnection();
+                 PreparedStatement stmt = connection.prepareStatement(sql)) {
+
+                stmt.setString(1, userPhone1);
+                stmt.setString(2, userPhone2);
+                stmt.setString(3, userPhone2);
+                stmt.setString(4, userPhone1);
+                stmt.setInt(5, limit);
+
+                ResultSet rs = stmt.executeQuery();
+                while (rs.next()) {
+                    String senderPhone = rs.getString("sender_phone");
+                    String senderLabel = userPhone1 != null && userPhone1.equals(senderPhone)
+                            ? "You"
+                            : rs.getString("username");
+
+                    if (senderLabel == null || senderLabel.isBlank()) {
+                        senderLabel = senderPhone;
+                    }
+
+                    String formatted = senderLabel + ": " + rs.getString("msg_content");
+                    messages.add(formatted);
+                }
+            } catch (SQLException e) {
+                System.err.println("Conversation fetch failed: " + e.getMessage());
+            }
+
+            // query gets newest-first, reverse for normal chat display order
+            Collections.reverse(messages);
+            return messages;
         }
 
 
@@ -106,8 +207,9 @@ public class MessengerApp
                 //this on connect part is triggered by teh line buildAsync(URI...("ws://localhost:7070/")) from the GUI
                 ws.onConnect(ctx -> {
 
-
-                    ctx_and_phones.put(ctx, ""); //empty phone for now
+                    String sid = ctx.sessionId();
+                    session_and_contexts.put(sid, ctx);
+                    session_and_phones.put(sid, ""); // empty phone until login
 
                 });
 
@@ -120,11 +222,20 @@ public class MessengerApp
                     String rawJson = ctx.message(); 
 
                     
-                    //create a JSON parser to first look at the 'type' field
-                    JsonObject json = JsonParser.parseString(rawJson).getAsJsonObject(); //parse the JSON string into a JsonObject
-                    
-                    //get the value of the 'type' field from the JSON object
-                    String type = json.get("type").getAsString();
+                    JsonObject json;
+                    String type;
+                    try {
+                        // Parse defensively so bad payloads don't kill an otherwise healthy socket.
+                        json = JsonParser.parseString(rawJson).getAsJsonObject();
+                        if (!json.has("type")) {
+                            ctx.send("{\"type\": \"bad_request\", \"message\": \"Missing message type\"}");
+                            return;
+                        }
+                        type = json.get("type").getAsString();
+                    } catch (Exception parseErr) {
+                        ctx.send("{\"type\": \"bad_request\", \"message\": \"Malformed JSON payload\"}");
+                        return;
+                    }
 
                     //used to format JSON strings, and to deconstruct sent json strings
                     Gson gson = new Gson();
@@ -132,7 +243,10 @@ public class MessengerApp
 
 
 
-                    if (type.equals("login")){
+                    if (type.equals("ping")) {
+                        ctx.send("{\"type\": \"pong\"}");
+
+                    } else if (type.equals("login")){
                         LoginInfo new_user = gson.fromJson(rawJson, LoginInfo.class);
 
 
@@ -141,8 +255,15 @@ public class MessengerApp
 
 
                         if (result.success){
+                            // attach websocket session to authenticated phone for routing and logout
+                            session_and_phones.put(ctx.sessionId(), new_user.phone_number);
 
-                            ctx.send("{\"type\": \"login_success\", \"phone\": \"" + new_user.phone_number + "\"}");
+                            Map<String, Object> loginPayload = new HashMap<>();
+                            loginPayload.put("type", "login_success");
+                            loginPayload.put("phone", new_user.phone_number);
+                            loginPayload.put("contacts", getKnownContacts(new_user.phone_number));
+
+                            ctx.send(gson.toJson(loginPayload));
                         } else {
                             ctx.send("{\"type\": \"login_error\", \"message\": \"" + result.message + "\"}");
                         }
@@ -154,9 +275,45 @@ public class MessengerApp
                         //convert the JSON string to a Message object, which has the fields: type, username, text
                         Message new_message = gson.fromJson(rawJson, Message.class); 
 
+                        // use authenticated phone for sender identity when available
+                        String authenticatedPhone = session_and_phones.get(ctx.sessionId());
+                        if (authenticatedPhone != null && !authenticatedPhone.isEmpty()) {
+                            new_message.fromPhone = authenticatedPhone;
+                        }
+
+                        if (new_message.fromPhone == null || new_message.fromPhone.isEmpty()) {
+                            ctx.send("{\"type\": \"message_error\", \"message\": \"You must be logged in to send messages.\"}");
+                            return;
+                        }
+
                         boolean result = messageRepo.saveMessage(new_message.fromPhone, new_message.toPhone, new_message.textMessage); 
                         if (result == true){
                             ctx.send("{\"type\": \"message successfully sent\"}");
+
+                            // all live sessions for the recipient phone
+
+                            Map<String, String> incomingPayload = new HashMap<>();
+                            incomingPayload.put("type", "incoming_message");
+                            incomingPayload.put("from", new_message.fromPhone);
+                            incomingPayload.put("fromPhone", new_message.fromPhone);
+                            incomingPayload.put("fromUsername", getUsernameByPhone(new_message.fromPhone));
+                            incomingPayload.put("text", new_message.textMessage);
+                            String incomingJson = gson.toJson(incomingPayload);
+
+                            for (Map.Entry<String, String> entry : session_and_phones.entrySet()) {
+                                if (new_message.toPhone != null && new_message.toPhone.equals(entry.getValue())) {
+                                    WsContext recipientCtx = session_and_contexts.get(entry.getKey());
+                                    if (recipientCtx != null) {
+                                        try {
+                                            recipientCtx.send(incomingJson);
+                                        } catch (Exception sendErr) {
+                                            // Clean stale socket mappings so future fanout stays accurate.
+                                            session_and_contexts.remove(entry.getKey());
+                                            session_and_phones.remove(entry.getKey());
+                                        }
+                                    }
+                                }
+                            }
                         }else{
                             ctx.send("{\"type\": \"message not successfully sent\"}");
                         }
@@ -166,8 +323,8 @@ public class MessengerApp
                     }else if (type.equals("register")){
                         RegisterInfo new_register = gson.fromJson(rawJson, RegisterInfo.class);
 
-                        // DATABASE REGISTRATION (Using phone_number for the username field too)
-                        AuthResult result = userRepo.register(new_register.phone_number, new_register.password, new_register.phone_number);
+                        // DATABASE REGISTRATION
+                        AuthResult result = userRepo.register(new_register.username, new_register.password, new_register.phone_number);
 
                         if (result.success) {
                             ctx.send("{\"type\": \"register_success\", \"message\": \"" + result.message + "\"}");
@@ -179,13 +336,14 @@ public class MessengerApp
 
                     }else if (type.equals("logout")){
                         
-
-                        userRepo.logout(ctx_and_phones.get(ctx)); 
+                        String phone = session_and_phones.get(ctx.sessionId());
+                        userRepo.logout(phone); 
 
                         
-                        ctx.send("{\"type\": \"logging_out\", \"message\": \"logging out: " + ctx_and_phones.get(ctx) + "\"}");                        
+                        ctx.send("{\"type\": \"logging_out\", \"message\": \"logging out: " + phone + "\"}");                        
 
-                        ctx_and_phones.remove(ctx); 
+                        session_and_phones.remove(ctx.sessionId()); 
+                        session_and_contexts.remove(ctx.sessionId());
                         ctx.session.close(); 
 
 
@@ -195,19 +353,17 @@ public class MessengerApp
 
                         retrieveMessages retrieve = gson.fromJson(rawJson, retrieveMessages.class); 
 
-                        //limit of 5 messages from history for simplicity
-                        List<String> messages = messageRepo.getConversation(retrieve.userPhone1, retrieve.userPhone2, 5); 
+                        // return latest 5 messages in this conversation
+                        List<String> messages = getLastConversationMessages(retrieve.userPhone1, retrieve.userPhone2, 5); 
 
-                        //create a hash map for key-value pairs to simplify json handling: 
-                        Map<String, String> map = new HashMap<>();
+                        Map<String, Object> historyPayload = new HashMap<>();
+                        historyPayload.put("type", "message_history");
+                        historyPayload.put("contact", retrieve.userPhone2);
+                        historyPayload.put("contactUsername", getUsernameByPhone(retrieve.userPhone2));
+                        historyPayload.put("messages", messages);
 
-                        //loop through the list of string messages: 
-                        for (int i = 0; i < messages.size(); i++){
-                            map.put(String.format("m%d", i+1), messages.get(i)); 
-                        }
-
-                        //send the map to GUI as json: 
-                        String retrieved_messages = gson.toJson(map); 
+                        //send typed message history to GUI as json:
+                        String retrieved_messages = gson.toJson(historyPayload); 
                         ctx.send(retrieved_messages); 
 
                         
@@ -229,8 +385,8 @@ public class MessengerApp
                 });
 
                 ws.onError(ctx -> {
-                    //client GUI would not be connected 
-                    System.out.println("An error occurred..."); 
+                    // Keep full context text in logs to diagnose socket drops.
+                    System.out.println("WebSocket error context: " + ctx);
                 });
 
 
@@ -241,7 +397,8 @@ public class MessengerApp
                     //print the session id of the client that just disconnected
                     System.out.println(ctx.sessionId() + " disconnected"); 
 
-                    ctx_and_phones.remove(ctx); 
+                    session_and_phones.remove(ctx.sessionId()); 
+                    session_and_contexts.remove(ctx.sessionId());
 
                 });
 
@@ -251,5 +408,27 @@ public class MessengerApp
         //define the websocket connection's endpoint:
 
 
+    }
+    // get username by linking it to the number so the displayed thing will be username even tho phone number for login
+    private static String getUsernameByPhone(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.isBlank()) {
+            return "";
+        }
+
+        String sql = "SELECT username FROM users WHERE phone_number = ?";
+
+        try (Connection connection = DatabaseManager.getConnection();
+             PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, phoneNumber);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                String username = rs.getString("username");
+                return username != null ? username : "";
+            }
+        } catch (SQLException e) {
+            System.out.println("Failed to load username: " + e.getMessage());
+        }
+
+        return "";
     }
 }
