@@ -70,7 +70,7 @@ public class MessengerGui extends Application {
     }
 
     private enum ThemePreset {
-        SOFT_LIGHT("Light", "#f7f8fc", "#e8edf6", "#f3f6fb", "#d3d9e5"),
+        SOFT_LIGHT("Black", "#1b1b1b", "#121212", "#232323", "#3a3a3a"),
         MINT_BREEZE("Green", "#eef9f6", "#d7efe8", "#e7f5f1", "#c5ddd7"),
         SUNSET_CREAM("Warm", "#fff7ef", "#f6e5d5", "#fdf1e5", "#e6d4c4");
 
@@ -281,6 +281,12 @@ public class MessengerGui extends Application {
         topBar.setPadding(new Insets(10, 15, 10, 15));
         topBar.setStyle(buildTopBarStyle());
 
+        // keep top-bar labels readable on the new black theme preset
+        if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            appTitle.setTextFill(Color.web("#f2f2f2"));
+            userLabel.setTextFill(Color.web("#cfcfcf"));
+        }
+
         contactSidebar = new VBox(6); // save ref so new contacts can be appended later
         contactSidebar.setPadding(new Insets(10));
 
@@ -402,22 +408,35 @@ public class MessengerGui extends Application {
         HBox.setHgrow(nameLabel, Priority.ALWAYS);
         nameLabel.setOnMouseClicked(e -> openChatScreen(contact));
 
-        // image mode sidebar has a white-tinted background so label text needs to be black to stay readable
-        if (customizationMode == CustomizationMode.IMAGE) {
-            nameLabel.setStyle("-fx-text-fill: #111111;");
-        }
-
         HBox tab = new HBox(nameLabel);
         tab.setAlignment(Pos.CENTER_LEFT);
         tab.setPadding(new Insets(8, 12, 8, 12));
-        // tab background matches the current theme so the sidebar looks cohesive
-        String tabBase = customizationMode == CustomizationMode.NONE
-                ? "white"
-                : (customizationMode == CustomizationMode.IMAGE
-                   ? "rgba(255,255,255,0.60)"
-                   : (selectedTheme != null ? selectedTheme.rootColor : "white"));
+
+        String tabBase;
+        String tabHover;
+        String labelColor;
+
+        if (customizationMode == CustomizationMode.IMAGE) {
+            tabBase = "rgba(255,255,255,0.60)";
+            tabHover = "rgba(255,255,255,0.78)";
+            labelColor = "#111111";
+        } else if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            // darker hover for black theme keeps light label text readable
+            tabBase = "#1f1f1f";
+            tabHover = "#2d3b52";
+            labelColor = "#f2f2f2";
+        } else {
+            tabBase = customizationMode == CustomizationMode.NONE
+                    ? "white"
+                    : (selectedTheme != null ? selectedTheme.rootColor : "white");
+            tabHover = "#dce8ff";
+            labelColor = "#111111";
+        }
+
+        nameLabel.setStyle("-fx-text-fill: " + labelColor + ";");
+
         tab.setStyle("-fx-background-color: " + tabBase + "; -fx-background-radius: 5; -fx-cursor: hand;");
-        tab.setOnMouseEntered(e -> tab.setStyle("-fx-background-color: #dce8ff; -fx-background-radius: 5; -fx-cursor: hand;"));
+        tab.setOnMouseEntered(e -> tab.setStyle("-fx-background-color: " + tabHover + "; -fx-background-radius: 5; -fx-cursor: hand;"));
         tab.setOnMouseExited(e ->  tab.setStyle("-fx-background-color: " + tabBase + "; -fx-background-radius: 5; -fx-cursor: hand;"));
 
         return tab;
@@ -489,6 +508,9 @@ public class MessengerGui extends Application {
 
         Label contactLabel = new Label("Chat with: " + contactDisplayNames.getOrDefault(contact, contact));
         contactLabel.setFont(Font.font("System", FontWeight.BOLD, 14));
+        if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            contactLabel.setTextFill(Color.web("#f2f2f2"));
+        }
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
