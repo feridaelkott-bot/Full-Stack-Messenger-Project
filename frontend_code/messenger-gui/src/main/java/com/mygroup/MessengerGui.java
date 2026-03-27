@@ -226,9 +226,11 @@ public class MessengerGui extends Application {
         Label userLabel = new Label("Logged in as: " + currentPhone);
         userLabel.setTextFill(Color.GRAY);
 
-        Button settingsBtn = new Button("Settings"); // todo : hook up to settings screen
+        // logout
+        Button logoutBtn = new Button("Logout");
+        logoutBtn.setOnAction(e -> logoutAndExit());
 
-        HBox topBar = new HBox(12, appTitle, userLabel, settingsBtn);
+        HBox topBar = new HBox(12, appTitle, userLabel, logoutBtn);
         topBar.setAlignment(Pos.CENTER_LEFT);
         topBar.setPadding(new Insets(10, 15, 10, 15));
         topBar.setStyle("-fx-background-color: #e8e8e8; -fx-border-color: #cccccc; -fx-border-width: 0 0 1 0;");
@@ -870,6 +872,28 @@ public class MessengerGui extends Application {
         if (webSocket != null) {
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Application closed");
         }
+    }
+
+    private void logoutAndExit() {
+        // exit via logging out, stop reconnect/heartbeat first, then close socket best-effort
+        shuttingDown = true;
+        stopHeartbeat();
+
+        if (reconnectTimer != null) {
+            reconnectTimer.cancel();
+            reconnectTimer = null;
+        }
+
+        try {
+            if (webSocket != null && isSocketConnected) {
+                webSocket.sendText(gson.toJson(new LogoutRequest()), true);
+                webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "User logged out");
+            }
+        } catch (Exception ignored) {
+            // app is exiting anyway
+        }
+
+        Platform.exit();
     }
 
     public static void main(String[] args) {
