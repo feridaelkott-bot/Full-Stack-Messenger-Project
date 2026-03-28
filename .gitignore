@@ -1,34 +1,13 @@
-# secrets so we don't get hacked
-config.properties
-local.properties
-.env
-*.pem
+# config
+backend_code/my-javalin-project/src/main/resources/config.properties
 
-# maven build folders
-target/
-pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-dependency-reduced-pom.xml
+# Maven build output
+backend_code/my-javalin-project/target/
 
-# intellij junk
+# IntelliJ files
 .idea/
 *.iml
-*.iws
-*.ipr
-out/
 
-# compiled java output
-*.class
-*.log
-*.jar
-*.war
-
-# annoying os files
+# OS files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
