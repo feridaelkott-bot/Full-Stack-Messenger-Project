@@ -13,15 +13,18 @@ import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 // for low level socket and connection needs
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
+import java.util.prefs.Preferences;
 
 public class MessengerGui extends Application {
 
@@ -59,6 +62,46 @@ public class MessengerGui extends Application {
     private static final long HEARTBEAT_INTERVAL_MS = 20000;
     private static final long PONG_TIMEOUT_MS = 70000;
     private static final long MAX_RECONNECT_DELAY_MS = 10000;
+
+    private enum CustomizationMode {
+        NONE,
+        THEME,
+        IMAGE
+    }
+
+    private enum ThemePreset {
+        SOFT_LIGHT("Black", "#1b1b1b", "#121212", "#232323", "#3a3a3a"),
+        MINT_BREEZE("Green", "#eef9f6", "#d7efe8", "#e7f5f1", "#c5ddd7"),
+        SUNSET_CREAM("Warm", "#fff7ef", "#f6e5d5", "#fdf1e5", "#e6d4c4");
+
+        final String label;
+        final String rootColor;
+        final String barColor;
+        final String panelColor;
+        final String borderColor;
+
+        ThemePreset(String label, String rootColor, String barColor, String panelColor, String borderColor) {
+            this.label = label;
+            this.rootColor = rootColor;
+            this.barColor = barColor;
+            this.panelColor = panelColor;
+            this.borderColor = borderColor;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
+    private final Preferences preferences = Preferences.userNodeForPackage(MessengerGui.class);
+    private CustomizationMode customizationMode = CustomizationMode.NONE;
+    private ThemePreset selectedTheme = ThemePreset.SOFT_LIGHT;
+    private String selectedBackgroundImageUri = "";
+
+    private static final String PREF_MODE_PREFIX = "ui.mode.";
+    private static final String PREF_THEME_PREFIX = "ui.theme.";
+    private static final String PREF_IMAGE_PREFIX = "ui.image.";
 
 
     // data classes for json formatting
@@ -216,8 +259,8 @@ public class MessengerGui extends Application {
     }
 
 
-    // todo : link settingsBtn to a settings screen
-    // todo : add remove/block/report buttons inside buildContactTab
+
+
     private void showMainPage() {
         Label appTitle = new Label("Messenger");
         appTitle.setFont(Font.font("System", FontWeight.BOLD, 16));
@@ -226,14 +269,23 @@ public class MessengerGui extends Application {
         Label userLabel = new Label("Logged in as: " + currentPhone);
         userLabel.setTextFill(Color.GRAY);
 
+        Button customizeBtn = new Button("Customize");
+        customizeBtn.setOnAction(e -> showCustomizationDialog());
+
         // logout
         Button logoutBtn = new Button("Logout");
         logoutBtn.setOnAction(e -> logoutAndExit());
 
-        HBox topBar = new HBox(12, appTitle, userLabel, logoutBtn);
+        HBox topBar = new HBox(12, appTitle, userLabel, customizeBtn, logoutBtn);
         topBar.setAlignment(Pos.CENTER_LEFT);
         topBar.setPadding(new Insets(10, 15, 10, 15));
-        topBar.setStyle("-fx-background-color: #e8e8e8; -fx-border-color: #cccccc; -fx-border-width: 0 0 1 0;");
+        topBar.setStyle(buildTopBarStyle());
+
+        // keep top-bar labels readable on the new black theme preset
+        if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            appTitle.setTextFill(Color.web("#f2f2f2"));
+            userLabel.setTextFill(Color.web("#cfcfcf"));
+        }
 
         contactSidebar = new VBox(6); // save ref so new contacts can be appended later
         contactSidebar.setPadding(new Insets(10));
@@ -249,8 +301,11 @@ public class MessengerGui extends Application {
 
         ScrollPane sidebarScroll = new ScrollPane(contactSidebar);
         sidebarScroll.setFitToWidth(true);
+        sidebarScroll.setFitToHeight(true); // stretches vbox to fill full panel height so empty area gets themed too
         sidebarScroll.setPrefWidth(220);
-        sidebarScroll.setStyle("-fx-background-color: #f0f0f0;");
+        sidebarScroll.setStyle(buildPanelStyle());
+        // apply theme/image tint to the inner vbox — scroll pane background alone doesn't cover the content area
+        contactSidebar.setStyle(buildContentStyle());
 
         VBox centerPane = new VBox();
         centerPane.setAlignment(Pos.CENTER);
@@ -263,6 +318,7 @@ public class MessengerGui extends Application {
         root.setTop(topBar);
         root.setLeft(sidebarScroll);
         root.setCenter(centerPane);
+        root.setStyle(buildRootStyle());
 
         Scene scene = new Scene(root, 720, 520);
         primaryStage.setTitle("Messenger - Home");
@@ -355,9 +411,33 @@ public class MessengerGui extends Application {
         HBox tab = new HBox(nameLabel);
         tab.setAlignment(Pos.CENTER_LEFT);
         tab.setPadding(new Insets(8, 12, 8, 12));
-        tab.setStyle("-fx-background-color: white; -fx-background-radius: 5; -fx-cursor: hand;");
-        tab.setOnMouseEntered(e -> tab.setStyle("-fx-background-color: #dce8ff; -fx-background-radius: 5; -fx-cursor: hand;"));
-        tab.setOnMouseExited(e ->  tab.setStyle("-fx-background-color: white;   -fx-background-radius: 5; -fx-cursor: hand;"));
+
+        String tabBase;
+        String tabHover;
+        String labelColor;
+
+        if (customizationMode == CustomizationMode.IMAGE) {
+            tabBase = "rgba(255,255,255,0.60)";
+            tabHover = "rgba(255,255,255,0.78)";
+            labelColor = "#111111";
+        } else if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            // darker hover for black theme keeps light label text readable
+            tabBase = "#1f1f1f";
+            tabHover = "#2d3b52";
+            labelColor = "#f2f2f2";
+        } else {
+            tabBase = customizationMode == CustomizationMode.NONE
+                    ? "white"
+                    : (selectedTheme != null ? selectedTheme.rootColor : "white");
+            tabHover = "#dce8ff";
+            labelColor = "#111111";
+        }
+
+        nameLabel.setStyle("-fx-text-fill: " + labelColor + ";");
+
+        tab.setStyle("-fx-background-color: " + tabBase + "; -fx-background-radius: 5; -fx-cursor: hand;");
+        tab.setOnMouseEntered(e -> tab.setStyle("-fx-background-color: " + tabHover + "; -fx-background-radius: 5; -fx-cursor: hand;"));
+        tab.setOnMouseExited(e ->  tab.setStyle("-fx-background-color: " + tabBase + "; -fx-background-radius: 5; -fx-cursor: hand;"));
 
         return tab;
     }
@@ -381,6 +461,10 @@ public class MessengerGui extends Application {
 
         ScrollPane scrollPane = new ScrollPane(messagesBox);
         scrollPane.setFitToWidth(true);
+        scrollPane.setFitToHeight(true); // stretches messagesBox to fill full chat area so empty space gets themed too
+        // apply theme/image tint to both the scroll wrapper and the inner messages vbox
+        scrollPane.setStyle(buildPanelStyle());
+        messagesBox.setStyle(buildContentStyle());
         messagesBox.heightProperty().addListener((obs, old, newH) -> scrollPane.setVvalue(1.0)); // auto-scroll to bottom
 
         TextField messageInput = new TextField();
@@ -413,7 +497,7 @@ public class MessengerGui extends Application {
         HBox inputBar = new HBox(8, messageInput, charCount, sendBtn);
         inputBar.setPadding(new Insets(10));
         inputBar.setAlignment(Pos.CENTER);
-        inputBar.setStyle("-fx-background-color: #f5f5f5; -fx-border-color: #ddd; -fx-border-width: 1 0 0 0;");
+        inputBar.setStyle(buildInputBarStyle());
 
         Button backBtn = new Button("<- Back");
         backBtn.setOnAction(e -> {
@@ -424,16 +508,27 @@ public class MessengerGui extends Application {
 
         Label contactLabel = new Label("Chat with: " + contactDisplayNames.getOrDefault(contact, contact));
         contactLabel.setFont(Font.font("System", FontWeight.BOLD, 14));
+        if (customizationMode == CustomizationMode.THEME && selectedTheme == ThemePreset.SOFT_LIGHT) {
+            contactLabel.setTextFill(Color.web("#f2f2f2"));
+        }
 
-        HBox topBar = new HBox(12, backBtn, contactLabel);
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        Button customizeBtn = new Button("Customize");
+        customizeBtn.setOnAction(e -> showCustomizationDialog());
+
+        HBox topBar = new HBox(12, backBtn, contactLabel, spacer, customizeBtn);
         topBar.setAlignment(Pos.CENTER_LEFT);
         topBar.setPadding(new Insets(10, 15, 10, 15));
-        topBar.setStyle("-fx-background-color: #e8e8e8; -fx-border-color: #ccc; -fx-border-width: 0 0 1 0;");
+        topBar.setStyle(buildTopBarStyle());
 
         BorderPane root = new BorderPane();
         root.setTop(topBar);
         root.setCenter(scrollPane);
         root.setBottom(inputBar);
+        root.setStyle(buildRootStyle());
+        scrollPane.setStyle(buildPanelStyle());
 
         Scene scene = new Scene(root, 720, 520);
         primaryStage.setTitle("Chat - " + contact);
@@ -454,10 +549,11 @@ public class MessengerGui extends Application {
         bubble.setWrapText(true);
         bubble.setMaxWidth(420);
         bubble.setPadding(new Insets(8, 14, 8, 14));
+        // bubbles always use solid opaque colors so text is readable over any theme or image
         bubble.setStyle(isOwn
-                ? "-fx-background-color: #dcf8c6; -fx-background-radius: 14; -fx-font-size: 13;"
+                ? "-fx-background-color: #dcf8c6; -fx-background-radius: 14; -fx-font-size: 13; -fx-text-fill: #111111;"
                 : "-fx-background-color: #ffffff; -fx-background-radius: 14; -fx-font-size: 13;"
-                  + "-fx-border-color: #e0e0e0; -fx-border-radius: 14;");
+                  + "-fx-border-color: #e0e0e0; -fx-border-radius: 14; -fx-text-fill: #111111;");
 
         HBox wrapper = new HBox(bubble);
         wrapper.setAlignment(isOwn ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
@@ -613,8 +709,225 @@ public class MessengerGui extends Application {
         }
     }
 
+    private void showCustomizationDialog() {
+        Stage dialog = new Stage();
+        dialog.initOwner(primaryStage);
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setTitle("Customize App");
 
-    // todo : add cases for logout/delete if backend sends confirmation
+        ToggleGroup modeGroup = new ToggleGroup();
+        RadioButton noneRadio = new RadioButton("Default style");
+        RadioButton themeRadio = new RadioButton("Use color theme");
+        RadioButton imageRadio = new RadioButton("Use background image");
+        // slightly bolder text on the options
+        noneRadio.setFont(Font.font("System", FontWeight.BOLD, 13));
+        themeRadio.setFont(Font.font("System", FontWeight.BOLD, 13));
+        imageRadio.setFont(Font.font("System", FontWeight.BOLD, 13));
+        noneRadio.setToggleGroup(modeGroup);
+        themeRadio.setToggleGroup(modeGroup);
+        imageRadio.setToggleGroup(modeGroup);
+
+        ComboBox<ThemePreset> themePicker = new ComboBox<>();
+        themePicker.getItems().addAll(ThemePreset.values());
+        themePicker.setValue(selectedTheme);
+        themePicker.setMaxWidth(Double.MAX_VALUE);
+
+        Label imageLabel = new Label(selectedBackgroundImageUri.isBlank()
+                ? "No image selected"
+                : "Image selected");
+        imageLabel.setWrapText(true);
+
+        final String[] chosenImageUri = {selectedBackgroundImageUri};
+        Button chooseImageBtn = new Button("Choose Image");
+        chooseImageBtn.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Choose Chat Background");
+            chooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("Images", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp")
+            );
+            File file = chooser.showOpenDialog(dialog);
+            if (file != null) {
+                chosenImageUri[0] = file.toURI().toString();
+                imageLabel.setText(file.getName());
+            }
+        });
+
+        if (customizationMode == CustomizationMode.IMAGE) {
+            imageRadio.setSelected(true);
+        } else if (customizationMode == CustomizationMode.THEME) {
+            themeRadio.setSelected(true);
+        } else {
+            noneRadio.setSelected(true);
+        }
+
+        Runnable syncInputs = () -> {
+            boolean usingTheme = themeRadio.isSelected();
+            boolean usingImage = imageRadio.isSelected();
+            themePicker.setDisable(!usingTheme);
+            chooseImageBtn.setDisable(!usingImage);
+            imageLabel.setDisable(!usingImage);
+        };
+        modeGroup.selectedToggleProperty().addListener((obs, old, cur) -> syncInputs.run());
+        syncInputs.run();
+
+        Label feedback = new Label("");
+        feedback.setTextFill(Color.RED);
+
+        Button saveBtn = new Button("Save");
+        saveBtn.setOnAction(e -> {
+            if (imageRadio.isSelected()) {
+                if (chosenImageUri[0] == null || chosenImageUri[0].isBlank()) {
+                    feedback.setText("Pick an image first, or choose another option.");
+                    return;
+                }
+                customizationMode = CustomizationMode.IMAGE;
+                selectedBackgroundImageUri = chosenImageUri[0];
+            } else if (themeRadio.isSelected()) {
+                customizationMode = CustomizationMode.THEME;
+                selectedTheme = themePicker.getValue() != null ? themePicker.getValue() : ThemePreset.SOFT_LIGHT;
+            } else {
+                customizationMode = CustomizationMode.NONE;
+            }
+
+            saveCustomizationPreferences();
+            dialog.close();
+            redrawCurrentScreen();
+        });
+
+        Button cancelBtn = new Button("Cancel");
+        cancelBtn.setOnAction(e -> dialog.close());
+
+        HBox buttons = new HBox(10, saveBtn, cancelBtn);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+
+        VBox layout = new VBox(10,
+                makeTitleLabel("Customize Messenger"),
+                noneRadio,
+                themeRadio,
+                themePicker,
+                imageRadio,
+                new HBox(8, chooseImageBtn, imageLabel),
+                feedback,
+                buttons
+        );
+        layout.setPadding(new Insets(16));
+
+        dialog.setScene(new Scene(layout, 420, 280));
+        dialog.showAndWait();
+    }
+
+    private void redrawCurrentScreen() {
+        if (!activeChatContact.isEmpty()) {
+            openChatScreen(activeChatContact);
+        } else {
+            showMainPage();
+        }
+    }
+
+    private void loadCustomizationPreferences() {
+        if (currentPhone == null || currentPhone.isBlank()) {
+            return;
+        }
+
+        try {
+            customizationMode = CustomizationMode.valueOf(
+                    preferences.get(PREF_MODE_PREFIX + currentPhone, CustomizationMode.NONE.name())
+            );
+        } catch (Exception ignored) {
+            customizationMode = CustomizationMode.NONE;
+        }
+
+        try {
+            selectedTheme = ThemePreset.valueOf(
+                    preferences.get(PREF_THEME_PREFIX + currentPhone, ThemePreset.SOFT_LIGHT.name())
+            );
+        } catch (Exception ignored) {
+            selectedTheme = ThemePreset.SOFT_LIGHT;
+        }
+
+        selectedBackgroundImageUri = preferences.get(PREF_IMAGE_PREFIX + currentPhone, "");
+        if (customizationMode == CustomizationMode.IMAGE && selectedBackgroundImageUri.isBlank()) {
+            customizationMode = CustomizationMode.THEME;
+        }
+    }
+
+    private void saveCustomizationPreferences() {
+        if (currentPhone == null || currentPhone.isBlank()) {
+            return;
+        }
+
+        preferences.put(PREF_MODE_PREFIX + currentPhone, customizationMode.name());
+        preferences.put(PREF_THEME_PREFIX + currentPhone, selectedTheme.name());
+        preferences.put(PREF_IMAGE_PREFIX + currentPhone, selectedBackgroundImageUri == null ? "" : selectedBackgroundImageUri);
+    }
+
+    private String buildRootStyle() {
+        if (customizationMode == CustomizationMode.IMAGE && selectedBackgroundImageUri != null && !selectedBackgroundImageUri.isBlank()) {
+            String safeUri = selectedBackgroundImageUri.replace("'", "%27");
+            return "-fx-background-image: url('" + safeUri + "');"
+                    + " -fx-background-size: cover;"
+                    + " -fx-background-position: center center;"
+                    + " -fx-background-repeat: no-repeat;";
+        }
+
+        ThemePreset theme = selectedTheme != null ? selectedTheme : ThemePreset.SOFT_LIGHT;
+        if (customizationMode == CustomizationMode.NONE) {
+            return "-fx-background-color: #ffffff;";
+        }
+        return "-fx-background-color: " + theme.rootColor + ";";
+    }
+
+    private String buildTopBarStyle() {
+        if (customizationMode == CustomizationMode.IMAGE) {
+            // more opaque so labels on the top bar stay readable over any image
+            return "-fx-background-color: rgba(255,255,255,0.78); -fx-border-color: rgba(0,0,0,0.15); -fx-border-width: 0 0 1 0;";
+        }
+        ThemePreset theme = selectedTheme != null ? selectedTheme : ThemePreset.SOFT_LIGHT;
+        if (customizationMode == CustomizationMode.NONE) {
+            return "-fx-background-color: #e8e8e8; -fx-border-color: #cccccc; -fx-border-width: 0 0 1 0;";
+        }
+        return "-fx-background-color: " + theme.barColor + "; -fx-border-color: " + theme.borderColor + "; -fx-border-width: 0 0 1 0;";
+    }
+
+    private String buildPanelStyle() {
+        if (customizationMode == CustomizationMode.IMAGE) {
+            // scroll pane wrapper is transparent
+            return "-fx-background: transparent; -fx-background-color: transparent;";
+        }
+        ThemePreset theme = selectedTheme != null ? selectedTheme : ThemePreset.SOFT_LIGHT;
+        if (customizationMode == CustomizationMode.NONE) {
+            return "-fx-background-color: #f0f0f0;";
+        }
+        return "-fx-background-color: " + theme.panelColor + ";";
+    }
+
+    private String buildInputBarStyle() {
+        if (customizationMode == CustomizationMode.IMAGE) {
+            // more opaque so text field and send button stay readable over any image
+            return "-fx-background-color: rgba(255,255,255,0.78); -fx-border-color: rgba(0,0,0,0.15); -fx-border-width: 1 0 0 0;";
+        }
+        ThemePreset theme = selectedTheme != null ? selectedTheme : ThemePreset.SOFT_LIGHT;
+        if (customizationMode == CustomizationMode.NONE) {
+            return "-fx-background-color: #f5f5f5; -fx-border-color: #dddddd; -fx-border-width: 1 0 0 0;";
+        }
+        return "-fx-background-color: " + theme.panelColor + "; -fx-border-color: " + theme.borderColor + "; -fx-border-width: 1 0 0 0;";
+    }
+
+
+    // returns the background style for content vboxes
+    // scroll pane wrapper uses buildPanelStyle, but the inner vbox needs its own color
+    private String buildContentStyle() {
+        if (customizationMode == CustomizationMode.IMAGE) {
+            return "-fx-background-color: rgba(255,255,255,0.2);";
+        }
+        ThemePreset theme = selectedTheme != null ? selectedTheme : ThemePreset.SOFT_LIGHT;
+        if (customizationMode == CustomizationMode.NONE) {
+            return "-fx-background-color: #f0f0f0;";
+        }
+        return "-fx-background-color: " + theme.panelColor + ";";
+    }
+
+
     private void handleServerMessage(String raw) {
         Platform.runLater(() -> { // all ui updates must go through runLater, runs on background thread
             try {
@@ -628,6 +941,7 @@ public class MessengerGui extends Application {
                         autoReauthInProgress = false;
 
                         if (json.has("phone")) currentPhone = json.get("phone").getAsString();
+                        loadCustomizationPreferences();
 
                         if (!wasAutoReauth) {
                             contactList.clear();
