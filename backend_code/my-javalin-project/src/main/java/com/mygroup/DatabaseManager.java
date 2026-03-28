@@ -15,6 +15,23 @@ public class DatabaseManager {
 
     //Creates the pool fails under critical conditions
     public static void init() {
+
+        String dbUrl = System.getenv("DATABASE_URL");
+
+        //if running on Render, then use Render's environment variable: 
+        if (dbUrl != null){
+            HikariConfig config = new HikariConfig();
+            config.setJdbcUrl(dbUrl.replace("postgres://", "jdbc:postgresql://"));
+            config.addDataSourceProperty("sslmode", "require");
+            config.setMaximumPoolSize(10);
+            config.setMinimumIdle(2);
+            config.setConnectionTimeout(30_000);
+            config.setIdleTimeout(600_000);
+            dataSource = new HikariDataSource(config);
+            System.out.println("Connected to database via DATABASE_URL");
+            return;
+        }
+        
         Properties properties = new Properties();
 
         //Reading of the config.properties
