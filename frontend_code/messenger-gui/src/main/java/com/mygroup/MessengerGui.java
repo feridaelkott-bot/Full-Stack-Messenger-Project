@@ -572,7 +572,12 @@ public class MessengerGui extends Application {
         // setup client to handle async websocket build
         HttpClient client = HttpClient.newHttpClient();
         client.newWebSocketBuilder()
-                .buildAsync(URI.create("ws://localhost:7070/"), new WebSocket.Listener() {
+                .buildAsync(URI.create("wss://full-stack-messenger-project-2.onrender.com/"), new WebSocket.Listener() { //include the url to the web service, using wss (secure websocket)
+
+                    //we use wss for a consistent, two-way connection between the client and the Javalin server
+                    //messages need to pushed instantly from teh server to the client 
+                    //teh HTTP protocol does nto provide instant access to new messages
+                    //so using wss keeps a permanent open connection so that the server can send cdata to the client at any time (while the connection is still open)
 
                     @Override
                     public void onOpen(WebSocket webSocket) {
