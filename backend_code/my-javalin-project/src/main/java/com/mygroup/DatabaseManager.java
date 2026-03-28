@@ -21,16 +21,29 @@ public class DatabaseManager {
         //if running on Render, then use Render's environment variable: 
         if (dbUrl != null){
             HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(dbUrl.replace("postgres://", "jdbc:postgresql://")
-                                     .replace("postgresql://", "jdbc:postgresql://"));
+        
+            // Parse the URL manually: postgresql://user:password@host/dbname
+            java.net.URI uri = java.net.URI.create(dbUrl);
+            String host = uri.getHost();
+            int port = uri.getPort() == -1 ? 5432 : uri.getPort();
+            String path = uri.getPath();
+            String[] userInfo = uri.getUserInfo().split(":");
+            String username = userInfo[0];
+            String password = userInfo[1];
+        
+            config.setJdbcUrl("jdbc:postgresql://" + host + ":" + port + path);
+            config.setUsername(username);
+            config.setPassword(password);
             config.addDataSourceProperty("sslmode", "require");
             config.setMaximumPoolSize(10);
             config.setMinimumIdle(2);
             config.setConnectionTimeout(30_000);
             config.setIdleTimeout(600_000);
+        
             dataSource = new HikariDataSource(config);
             System.out.println("Connected to database via DATABASE_URL");
             return;
+
         }
         
         Properties properties = new Properties();
