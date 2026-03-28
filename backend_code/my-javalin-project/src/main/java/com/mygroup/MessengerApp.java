@@ -403,7 +403,7 @@ public class MessengerApp
                 });
 
             })
-            .start(7070);
+            .start(Integer.parseInt(System.getenv().getOrDefault("PORT", "7070")));//this will access the port of the virtual environment, if we're running on Render, otherwise it will switch to local 7070 default port
 
         //define the websocket connection's endpoint:
 
