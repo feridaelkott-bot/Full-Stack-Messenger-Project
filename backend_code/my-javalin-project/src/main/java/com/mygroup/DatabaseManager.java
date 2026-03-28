@@ -21,7 +21,8 @@ public class DatabaseManager {
         //if running on Render, then use Render's environment variable: 
         if (dbUrl != null){
             HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(dbUrl.replace("postgres://", "jdbc:postgresql://"));
+            config.setJdbcUrl(dbUrl.replace("postgres://", "jdbc:postgresql://")
+                                     .replace("postgresql://", "jdbc:postgresql://"));
             config.addDataSourceProperty("sslmode", "require");
             config.setMaximumPoolSize(10);
             config.setMinimumIdle(2);
