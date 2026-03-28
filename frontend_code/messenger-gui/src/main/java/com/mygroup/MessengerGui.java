@@ -241,7 +241,7 @@ public class MessengerGui extends Application {
 
         // simple layout styling
         VBox layout = new VBox(12,
-                makeTitleLabel("Messenger App"),
+                makeTitleLabel("CustomChat"),
                 phoneInput,
                 passwordInput,
                 usernameInput,
