@@ -39,6 +39,7 @@ public class MessengerGui extends Application {
     private final Map<String, List<String>> messageHistory = new HashMap<>(); // cached msgs per contact
     private final List<String> contactList = new ArrayList<>(); // sidebar contacts
     private final Map<String, String> contactDisplayNames = new HashMap<>(); // phone -> username label
+    private final Set<String> unreadContacts = new HashSet<>(); // contacts with unseen incoming messages
 
     private VBox chatMessageBox = null; // live ref so incoming msgs can append
     private Label loginFeedbackLabel = null; // live ref so server errors can update it
@@ -253,7 +254,7 @@ public class MessengerGui extends Application {
 
         // window settings n whatnot
         Scene scene = new Scene(layout, 380, 300);
-        primaryStage.setTitle("Messenger - Login");
+        primaryStage.setTitle("CustomChat - Login");
         primaryStage.setScene(scene);
         primaryStage.show();
     }
@@ -262,7 +263,7 @@ public class MessengerGui extends Application {
 
 
     private void showMainPage() {
-        Label appTitle = new Label("Messenger");
+        Label appTitle = new Label("CustomChat");
         appTitle.setFont(Font.font("System", FontWeight.BOLD, 16));
         HBox.setHgrow(appTitle, Priority.ALWAYS);
 
@@ -289,15 +290,7 @@ public class MessengerGui extends Application {
 
         contactSidebar = new VBox(6); // save ref so new contacts can be appended later
         contactSidebar.setPadding(new Insets(10));
-
-        Button newMessageBtn = new Button("+ New Message");
-        newMessageBtn.setMaxWidth(Double.MAX_VALUE);
-        newMessageBtn.setOnAction(e -> showNewMessageDialog()); // opens dialog to start a new chat
-        contactSidebar.getChildren().add(newMessageBtn);
-
-        for (String contact : contactList) {
-            contactSidebar.getChildren().add(buildContactTab(contact));
-        }
+        rebuildContactSidebar();
 
         ScrollPane sidebarScroll = new ScrollPane(contactSidebar);
         sidebarScroll.setFitToWidth(true);
@@ -321,7 +314,7 @@ public class MessengerGui extends Application {
         root.setStyle(buildRootStyle());
 
         Scene scene = new Scene(root, 720, 520);
-        primaryStage.setTitle("Messenger - Home");
+        primaryStage.setTitle("CustomChat - Home");
         primaryStage.setScene(scene);
         primaryStage.show(); // needed when transitioning from login screen
     }
@@ -361,14 +354,10 @@ public class MessengerGui extends Application {
             // send the message to backend
             sendToServer(gson.toJson(new NewMessageRequest(to, msg)));
 
-            // add contact to list + sidebar if not already there
-            if (!contactList.contains(to)) {
-                contactList.add(to);
-                contactDisplayNames.putIfAbsent(to, to);
-                if (contactSidebar != null) {
-                    contactSidebar.getChildren().add(buildContactTab(to)); // append tab live without rebuilding page
-                }
-            }
+            contactDisplayNames.putIfAbsent(to, to);
+            bumpContactToTop(to);
+            unreadContacts.remove(to);
+            refreshContactSidebarIfVisible();
 
             // cache msg locally n close dialog
             String line = "You: " + msg;
@@ -408,7 +397,13 @@ public class MessengerGui extends Application {
         HBox.setHgrow(nameLabel, Priority.ALWAYS);
         nameLabel.setOnMouseClicked(e -> openChatScreen(contact));
 
-        HBox tab = new HBox(nameLabel);
+        Label unreadBadge = new Label("NEW");
+        unreadBadge.setStyle("-fx-font-size: 10; -fx-font-weight: bold; -fx-text-fill: #1d4ed8;");
+        boolean hasUnread = unreadContacts.contains(contact);
+        unreadBadge.setVisible(hasUnread);
+        unreadBadge.setManaged(hasUnread);
+
+        HBox tab = new HBox(8, nameLabel, unreadBadge);
         tab.setAlignment(Pos.CENTER_LEFT);
         tab.setPadding(new Insets(8, 12, 8, 12));
 
@@ -445,6 +440,8 @@ public class MessengerGui extends Application {
 
     private void openChatScreen(String contact) {
         activeChatContact = contact;
+        unreadContacts.remove(contact);
+        bumpContactToTop(contact);
 
         // ask backend for history between current user and this contact
         sendToServer(gson.toJson(new RetrieveMessagesRequest(contact)));
@@ -487,6 +484,7 @@ public class MessengerGui extends Application {
                 sendToServer(gson.toJson(new NewMessageRequest(contact, text)));
                 String line = "You: " + text;
                 messageHistory.computeIfAbsent(contact, k -> new ArrayList<>()).add(line);
+                bumpContactToTop(contact);
                 messagesBox.getChildren().add(buildMessageBubble(line)); // optimistic update, don't wait for echo
                 messageInput.clear();
             }
@@ -806,7 +804,7 @@ public class MessengerGui extends Application {
         buttons.setAlignment(Pos.CENTER_RIGHT);
 
         VBox layout = new VBox(10,
-                makeTitleLabel("Customize Messenger"),
+                makeTitleLabel("Customize CustomChat"),
                 noneRadio,
                 themeRadio,
                 themePicker,
@@ -952,6 +950,7 @@ public class MessengerGui extends Application {
                             contactList.clear();
                             messageHistory.clear();
                             contactDisplayNames.clear();
+                            unreadContacts.clear();
                         }
 
                         if (json.has("contacts")) {
@@ -1026,6 +1025,7 @@ public class MessengerGui extends Application {
                         contactList.clear();
                         messageHistory.clear();
                         contactDisplayNames.clear();
+                        unreadContacts.clear();
                         activeChatContact = "";
                         chatMessageBox = null;
                         contactSidebar = null;
@@ -1038,7 +1038,8 @@ public class MessengerGui extends Application {
                                 (json.has("from") ? json.get("from").getAsString() : "Unknown");
                         String fromUsername = json.has("fromUsername") ? json.get("fromUsername").getAsString() : "";
                         String text = json.has("text") ? json.get("text").getAsString() : "";
-                        String line = fromPhone + ": " + text;
+                        String senderLabel = (fromUsername != null && !fromUsername.isBlank()) ? fromUsername : fromPhone;
+                        String line = senderLabel + ": " + text;
 
                         if (fromUsername != null && !fromUsername.isBlank()) {
                             contactDisplayNames.put(fromPhone, fromUsername);
@@ -1047,18 +1048,15 @@ public class MessengerGui extends Application {
                         }
 
                         messageHistory.computeIfAbsent(fromPhone, k -> new ArrayList<>()).add(line);
+                        bumpContactToTop(fromPhone);
 
                         if (chatMessageBox != null && fromPhone.equals(activeChatContact)) {
                             chatMessageBox.getChildren().add(buildMessageBubble(line)); // append live if chat is open
+                            unreadContacts.remove(fromPhone);
+                        } else {
+                            unreadContacts.add(fromPhone);
                         }
-
-                        if (!contactList.contains(fromPhone)) {
-                            contactList.add(fromPhone);
-                            // If user is on home page, add the new sender to the live sidebar immediately.
-                            if (contactSidebar != null) {
-                                contactSidebar.getChildren().add(buildContactTab(fromPhone));
-                            }
-                        }
+                        refreshContactSidebarIfVisible();
                         break;
                     }
 
@@ -1163,12 +1161,44 @@ public class MessengerGui extends Application {
             contactList.clear();
             messageHistory.clear();
             contactDisplayNames.clear();
+            unreadContacts.clear();
             activeChatContact = "";
             chatMessageBox = null;
             contactSidebar = null;
             showLoginScreen();
         } else {
             System.out.println("Unhandled plain server response: " + raw);
+        }
+    }
+
+    // make most recent interaction be at top
+    private void bumpContactToTop(String contact) {
+        if (contact == null || contact.isBlank()) {
+            return;
+        }
+        contactList.remove(contact);
+        contactList.add(0, contact);
+    }
+
+    private void rebuildContactSidebar() {
+        if (contactSidebar == null) {
+            return;
+        }
+
+        contactSidebar.getChildren().clear();
+        Button newMessageBtn = new Button("+ New Message");
+        newMessageBtn.setMaxWidth(Double.MAX_VALUE);
+        newMessageBtn.setOnAction(e -> showNewMessageDialog()); // opens dialog to start a new chat
+        contactSidebar.getChildren().add(newMessageBtn);
+
+        for (String contact : contactList) {
+            contactSidebar.getChildren().add(buildContactTab(contact));
+        }
+    }
+
+    private void refreshContactSidebarIfVisible() {
+        if (contactSidebar != null && activeChatContact.isEmpty()) {
+            rebuildContactSidebar();
         }
     }
 
