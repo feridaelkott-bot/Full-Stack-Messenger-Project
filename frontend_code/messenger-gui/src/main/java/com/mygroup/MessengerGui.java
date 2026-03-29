@@ -39,6 +39,7 @@ public class MessengerGui extends Application {
     private final Map<String, List<String>> messageHistory = new HashMap<>(); // cached msgs per contact
     private final List<String> contactList = new ArrayList<>(); // sidebar contacts
     private final Map<String, String> contactDisplayNames = new HashMap<>(); // phone -> username label
+    private final Set<String> unreadContacts = new HashSet<>(); // contacts with unseen incoming messages
 
     private VBox chatMessageBox = null; // live ref so incoming msgs can append
     private Label loginFeedbackLabel = null; // live ref so server errors can update it
@@ -290,9 +291,7 @@ public class MessengerGui extends Application {
         contactSidebar = new VBox(6); // save ref so new contacts can be appended later
         contactSidebar.setPadding(new Insets(10));
 
-        Button newMessageBtn = new Button("+ New Message");
-        newMessageBtn.setMaxWidth(Double.MAX_VALUE);
-        newMessageBtn.setOnAction(e -> showNewMessageDialog()); // opens dialog to start a new chat
+        Button newMessageBtn = buildNewMessageButton();
         contactSidebar.getChildren().add(newMessageBtn);
 
         for (String contact : contactList) {
@@ -324,6 +323,52 @@ public class MessengerGui extends Application {
         primaryStage.setTitle("CustomChat - Home");
         primaryStage.setScene(scene);
         primaryStage.show(); // needed when transitioning from login screen
+    }
+
+    private Button buildNewMessageButton() {
+        Button newMessageBtn = new Button("+ New Message");
+        newMessageBtn.setMaxWidth(Double.MAX_VALUE);
+        newMessageBtn.setOnAction(e -> showNewMessageDialog());
+        return newMessageBtn;
+    }
+
+    private void refreshContactSidebar() {
+        if (contactSidebar == null) {
+            return;
+        }
+
+        contactSidebar.getChildren().clear();
+        contactSidebar.getChildren().add(buildNewMessageButton());
+        for (String contact : contactList) {
+            contactSidebar.getChildren().add(buildContactTab(contact));
+        }
+    }
+
+    private void touchContact(String contact, boolean markUnread) {
+        if (contact == null || contact.isBlank()) {
+            return;
+        }
+
+        contactList.remove(contact);
+        contactList.add(0, contact);
+
+        if (markUnread) {
+            unreadContacts.add(contact);
+        } else {
+            unreadContacts.remove(contact);
+        }
+
+        refreshContactSidebar();
+    }
+
+    private void clearUnread(String contact) {
+        if (contact == null || contact.isBlank()) {
+            return;
+        }
+
+        if (unreadContacts.remove(contact)) {
+            refreshContactSidebar();
+        }
     }
 
     // asks for recipient phone + first message then sends both
@@ -361,14 +406,8 @@ public class MessengerGui extends Application {
             // send the message to backend
             sendToServer(gson.toJson(new NewMessageRequest(to, msg)));
 
-            // add contact to list + sidebar if not already there
-            if (!contactList.contains(to)) {
-                contactList.add(to);
-                contactDisplayNames.putIfAbsent(to, to);
-                if (contactSidebar != null) {
-                    contactSidebar.getChildren().add(buildContactTab(to)); // append tab live without rebuilding page
-                }
-            }
+            contactDisplayNames.putIfAbsent(to, to);
+            touchContact(to, false);
 
             // cache msg locally n close dialog
             String line = "You: " + msg;
@@ -408,7 +447,13 @@ public class MessengerGui extends Application {
         HBox.setHgrow(nameLabel, Priority.ALWAYS);
         nameLabel.setOnMouseClicked(e -> openChatScreen(contact));
 
-        HBox tab = new HBox(nameLabel);
+        Label unreadBadge = new Label("NEW");
+        unreadBadge.setStyle("-fx-background-color: #d93025; -fx-text-fill: white; -fx-font-size: 10; -fx-padding: 2 6 2 6; -fx-background-radius: 10;");
+        boolean hasUnread = unreadContacts.contains(contact);
+        unreadBadge.setVisible(hasUnread);
+        unreadBadge.setManaged(hasUnread);
+
+        HBox tab = new HBox(8, nameLabel, unreadBadge);
         tab.setAlignment(Pos.CENTER_LEFT);
         tab.setPadding(new Insets(8, 12, 8, 12));
 
@@ -445,6 +490,7 @@ public class MessengerGui extends Application {
 
     private void openChatScreen(String contact) {
         activeChatContact = contact;
+        clearUnread(contact);
 
         // ask backend for history between current user and this contact
         sendToServer(gson.toJson(new RetrieveMessagesRequest(contact)));
@@ -485,6 +531,7 @@ public class MessengerGui extends Application {
             String text = messageInput.getText().trim();
             if (!text.isEmpty()) {
                 sendToServer(gson.toJson(new NewMessageRequest(contact, text)));
+                touchContact(contact, false);
                 String line = "You: " + text;
                 messageHistory.computeIfAbsent(contact, k -> new ArrayList<>()).add(line);
                 messagesBox.getChildren().add(buildMessageBubble(line)); // optimistic update, don't wait for echo
@@ -927,6 +974,61 @@ public class MessengerGui extends Application {
         return "-fx-background-color: " + theme.panelColor + ";";
     }
 
+    // prevent duplicate message sending, especially on first message of new contact
+    private boolean containsEquivalentHistoryLine(List<String> existingLines, String candidateLine, String contact) {
+        for (String existingLine : existingLines) {
+            if (areEquivalentMessageLines(existingLine, candidateLine, contact)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean areEquivalentMessageLines(String firstLine, String secondLine, String contact) {
+        String[] firstParts = splitMessageLine(firstLine);
+        String[] secondParts = splitMessageLine(secondLine);
+
+        if (!Objects.equals(firstParts[1], secondParts[1])) {
+            return false;
+        }
+
+        int firstSenderGroup = classifySenderLabel(firstParts[0], contact);
+        int secondSenderGroup = classifySenderLabel(secondParts[0], contact);
+
+        if (firstSenderGroup != 0 && secondSenderGroup != 0) {
+            return firstSenderGroup == secondSenderGroup;
+        }
+
+        return Objects.equals(firstLine, secondLine);
+    }
+
+    private String[] splitMessageLine(String line) {
+        int separatorIndex = line.indexOf(": ");
+        if (separatorIndex < 0) {
+            return new String[]{"", line};
+        }
+        return new String[]{line.substring(0, separatorIndex), line.substring(separatorIndex + 2)};
+    }
+
+    private int classifySenderLabel(String senderLabel, String contact) {
+        String label = senderLabel == null ? "" : senderLabel.trim();
+        if (label.isEmpty()) {
+            return 0;
+        }
+
+        if (label.equals("You") || (!currentPhone.isBlank() && label.equals(currentPhone))) {
+            return 1;
+        }
+
+        String contactDisplay = contactDisplayNames.getOrDefault(contact, contact);
+        if ((contact != null && !contact.isBlank() && label.equals(contact))
+                || (contactDisplay != null && !contactDisplay.isBlank() && label.equals(contactDisplay))) {
+            return 2;
+        }
+
+        return 0;
+    }
+
 
     private void handleServerMessage(String raw) {
         Platform.runLater(() -> { // all ui updates must go through runLater, runs on background thread
@@ -947,6 +1049,7 @@ public class MessengerGui extends Application {
                             contactList.clear();
                             messageHistory.clear();
                             contactDisplayNames.clear();
+                            unreadContacts.clear();
                         }
 
                         if (json.has("contacts")) {
@@ -1021,6 +1124,7 @@ public class MessengerGui extends Application {
                         contactList.clear();
                         messageHistory.clear();
                         contactDisplayNames.clear();
+                        unreadContacts.clear();
                         activeChatContact = "";
                         chatMessageBox = null;
                         contactSidebar = null;
@@ -1043,17 +1147,13 @@ public class MessengerGui extends Application {
 
                         messageHistory.computeIfAbsent(fromPhone, k -> new ArrayList<>()).add(line);
 
-                        if (chatMessageBox != null && fromPhone.equals(activeChatContact)) {
+                        boolean chatIsOpenForSender = chatMessageBox != null && fromPhone.equals(activeChatContact);
+                        touchContact(fromPhone, !chatIsOpenForSender);
+
+                        if (chatIsOpenForSender) {
                             chatMessageBox.getChildren().add(buildMessageBubble(line)); // append live if chat is open
                         }
 
-                        if (!contactList.contains(fromPhone)) {
-                            contactList.add(fromPhone);
-                            // If user is on home page, add the new sender to the live sidebar immediately.
-                            if (contactSidebar != null) {
-                                contactSidebar.getChildren().add(buildContactTab(fromPhone));
-                            }
-                        }
                         break;
                     }
 
@@ -1086,7 +1186,7 @@ public class MessengerGui extends Application {
                             // if no exit from app, jus back button, keep local in-session flow and only add unseen backfill lines
                             hist = new ArrayList<>(existing);
                             for (String line : retrieved) {
-                                if (!hist.contains(line)) {
+                                if (!containsEquivalentHistoryLine(hist, line, contact)) {
                                     hist.add(line);
                                 }
                             }
@@ -1096,9 +1196,7 @@ public class MessengerGui extends Application {
 
                         if (!contactList.contains(contact)) {
                             contactList.add(contact);
-                            if (contactSidebar != null) {
-                                contactSidebar.getChildren().add(buildContactTab(contact));
-                            }
+                            refreshContactSidebar();
                         }
 
                         if (chatMessageBox != null && contact.equals(activeChatContact)) {
@@ -1158,6 +1256,7 @@ public class MessengerGui extends Application {
             contactList.clear();
             messageHistory.clear();
             contactDisplayNames.clear();
+            unreadContacts.clear();
             activeChatContact = "";
             chatMessageBox = null;
             contactSidebar = null;
