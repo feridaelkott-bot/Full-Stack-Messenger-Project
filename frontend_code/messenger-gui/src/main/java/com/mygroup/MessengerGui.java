@@ -241,7 +241,7 @@ public class MessengerGui extends Application {
 
         // simple layout styling
         VBox layout = new VBox(12,
-                makeTitleLabel("Messenger App"),
+                makeTitleLabel("CustomChat"),
                 phoneInput,
                 passwordInput,
                 usernameInput,
@@ -253,7 +253,7 @@ public class MessengerGui extends Application {
 
         // window settings n whatnot
         Scene scene = new Scene(layout, 380, 300);
-        primaryStage.setTitle("Messenger - Login");
+        primaryStage.setTitle("CustomChat - Login");
         primaryStage.setScene(scene);
         primaryStage.show();
     }
@@ -262,7 +262,7 @@ public class MessengerGui extends Application {
 
 
     private void showMainPage() {
-        Label appTitle = new Label("Messenger");
+        Label appTitle = new Label("CustomChat");
         appTitle.setFont(Font.font("System", FontWeight.BOLD, 16));
         HBox.setHgrow(appTitle, Priority.ALWAYS);
 
@@ -321,7 +321,7 @@ public class MessengerGui extends Application {
         root.setStyle(buildRootStyle());
 
         Scene scene = new Scene(root, 720, 520);
-        primaryStage.setTitle("Messenger - Home");
+        primaryStage.setTitle("CustomChat - Home");
         primaryStage.setScene(scene);
         primaryStage.show(); // needed when transitioning from login screen
     }
@@ -801,7 +801,7 @@ public class MessengerGui extends Application {
         buttons.setAlignment(Pos.CENTER_RIGHT);
 
         VBox layout = new VBox(10,
-                makeTitleLabel("Customize Messenger"),
+                makeTitleLabel("Customize CustomChat"),
                 noneRadio,
                 themeRadio,
                 themePicker,
