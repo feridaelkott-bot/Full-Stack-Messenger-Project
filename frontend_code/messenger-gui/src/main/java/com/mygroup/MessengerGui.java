@@ -1086,13 +1086,17 @@ public class MessengerGui extends Application {
                             // first open in this run use backend backfill for last 5 messages from chat
                             hist = new ArrayList<>(retrieved);
                         } else {
-                            // if no exit from app, jus back button, keep local in-session flow and only add unseen backfill lines
-                            hist = new ArrayList<>(existing);
-                            for (String line : retrieved) {
-                                if (!hist.contains(line)) {
-                                    hist.add(line);
+                            // backend history is already chronological; use it as source of truth for ordering,
+                            // then append any optimistic local lines that are not in the retrieved payload yet.
+                            List<String> pendingLocal = new ArrayList<>();
+                            for (String line : existing) {
+                                if (!retrieved.contains(line)) {
+                                    pendingLocal.add(line);
                                 }
                             }
+
+                            hist = new ArrayList<>(retrieved);
+                            hist.addAll(pendingLocal);
                         }
 
                         messageHistory.put(contact, hist);
